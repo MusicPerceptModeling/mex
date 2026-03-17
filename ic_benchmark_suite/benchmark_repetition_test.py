@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scipy.stats
-from datasets import Dataset
+from datasets import Dataset, Features, Sequence, Value
 
 
 def _to_pandas(segment_df):
@@ -53,7 +53,7 @@ def _pick_annotation_columns(df: pd.DataFrame) -> tuple[str, str, str]:
     return start_col, end_col, type_col
 
 
-def _annotation_table_to_segment_dict(annotation_df: pd.DataFrame, anidx: int) -> dict:
+def _annotation_table_to_segment_dict(annotation_df: pd.DataFrame, anidx: str) -> dict:
     if annotation_df.empty:
         return {"anidx": anidx, "start_sec": [], "end_sec": [], "type": []}
 
@@ -65,14 +65,14 @@ def _annotation_table_to_segment_dict(annotation_df: pd.DataFrame, anidx: int) -
     keep = start_vals.notna() & end_vals.notna()
 
     return {
-        "anidx": int(anidx),
+        "anidx": str(anidx),
         "start_sec": start_vals[keep].astype(float).tolist(),
         "end_sec": end_vals[keep].astype(float).tolist(),
         "type": type_vals[keep].tolist(),
     }
 
 
-def _read_salami_annotations(folder: Path) -> pd.DataFrame:
+def _collect_salami_annotations(folder: Path) -> Dict[int, dict]:
     annotations_root = folder / "salami-data-public" / "annotations"
     pattern = re.compile(
         r"^.*/(?P<id>\d+)/parsed/textfile(?P<aid>\d+)_(?P<level>functions|uppercase|lowercase)\.txt$"
@@ -84,7 +84,7 @@ def _read_salami_annotations(folder: Path) -> pd.DataFrame:
         if match is None:
             continue
         id_ = int(match.group("id"))
-        aid = int(match.group("aid"))
+        aid = match.group("aid")
         level = match.group("level")
 
         # SALAMI parsed files are boundary lists (start_sec, type) without headers.
@@ -109,6 +109,12 @@ def _read_salami_annotations(folder: Path) -> pd.DataFrame:
         id_bucket = per_id.setdefault(id_, {})
         id_bucket.setdefault(level, []).append(seg_dict)
 
+    return per_id
+
+
+def _read_salami_annotations(folder: Path) -> pd.DataFrame:
+    per_id = _collect_salami_annotations(folder)
+
     if not per_id:
         return pd.DataFrame(columns=["id", "functions", "uppercase", "lowercase"])
 
@@ -116,6 +122,147 @@ def _read_salami_annotations(folder: Path) -> pd.DataFrame:
     anno_df.index.name = "id"
     anno_df = anno_df.reset_index()
     return anno_df
+
+
+def _parse_salami_annotation_file(path_str: str) -> dict:
+    pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile(?P<aid>[^_/]+)_(?P<level>functions|uppercase|lowercase)\.txt$")
+    match = pattern.match(path_str)
+    if match is None:
+        raise ValueError(f"Unexpected SALAMI annotation path format: {path_str}")
+
+    raw_df = pd.read_csv(path_str, sep=r"\s+", header=None, names=["start_sec", "type"])
+    raw_df["start_sec"] = pd.to_numeric(raw_df["start_sec"], errors="coerce")
+    raw_df["type"] = raw_df["type"].astype(str)
+    raw_df = raw_df.dropna(subset=["start_sec"]).reset_index(drop=True)
+
+    seg_df = pd.DataFrame(
+        {
+            "start_sec": raw_df["start_sec"].iloc[:-1].to_numpy(),
+            "end_sec": raw_df["start_sec"].iloc[1:].to_numpy(),
+            "type": raw_df["type"].iloc[:-1].to_numpy(),
+        }
+    )
+    seg_dict = _annotation_table_to_segment_dict(seg_df, anidx=match.group("aid"))
+    return {
+        "id": int(match.group("id")),
+        "level": match.group("level"),
+        "segment": seg_dict,
+    }
+
+
+def _salami_parsed_features() -> Features:
+    return Features(
+        {
+            "id": Value("int64"),
+            "level": Value("string"),
+            "segment": {
+                "anidx": Value("string"),
+                "start_sec": Sequence(Value("float64")),
+                "end_sec": Sequence(Value("float64")),
+                "type": Sequence(Value("string")),
+            },
+        }
+    )
+
+
+def _salami_grouped_features() -> Features:
+    segment = {
+        "anidx": Value("string"),
+        "start_sec": Sequence(Value("float64")),
+        "end_sec": Sequence(Value("float64")),
+        "type": Sequence(Value("string")),
+    }
+    return Features(
+        {
+            "id": Value("int64"),
+            "functions": Sequence(segment),
+            "uppercase": Sequence(segment),
+            "lowercase": Sequence(segment),
+        }
+    )
+
+
+def read_salami_annotations_hf(
+    folder: Path,
+    cache_dir: str | None = None,
+    keep_ids: set[int] | None = None,
+) -> Dataset:
+    """Read SALAMI annotations as a cached HF Dataset using parallel per-file parsing."""
+    pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile[^_/]+_(functions|uppercase|lowercase)\.txt$")
+    paths = []
+    for p in (folder / "salami-data-public" / "annotations").rglob("textfile*_*.txt"):
+        path_str = str(p)
+        if keep_ids is not None:
+            match = pattern.match(path_str)
+            if match is None or int(match.group("id")) not in keep_ids:
+                continue
+        paths.append(path_str)
+    paths.sort()
+
+    if not paths:
+        return Dataset.from_list([])
+
+    files_ds = Dataset.from_dict({"path": paths})
+    cache_file_name = None
+    # if cache_dir is not None:
+    #     cache_root = Path(cache_dir)
+    #     cache_root.mkdir(parents=True, exist_ok=True)
+    #     cache_file_name = str(cache_root / "salami_annotations_parsed.arrow")
+
+    parsed = files_ds.map(
+        _parse_salami_annotation_file,
+        num_proc=max(1, min(8, len(paths))),
+        load_from_cache_file=True,
+        cache_file_name=cache_file_name,
+        features=_salami_parsed_features(),
+        input_columns=["path"],
+        remove_columns=["path"],
+    )
+
+    by_id: Dict[int, dict] = {}
+    for ex in parsed:
+        # id_bucket = by_id.setdefault(
+        #     int(ex["id"]),
+        #     {"id": int(ex["id"]), "functions": [], "uppercase": [], "lowercase": []},
+        # )
+        # id_bucket[str(ex["level"])].append(ex["segment"])
+        id_bucket = by_id.setdefault(int(ex["id"]), {"id": int(ex["id"])})
+        segment_bucket = id_bucket.setdefault(str(ex["level"]), [])
+        segment_bucket.append(ex["segment"])
+
+    rows = [by_id[id_] for id_ in sorted(by_id)]
+    return Dataset.from_list(rows)
+
+
+def compare_salami_annotation_readers(folder: Path, cache_dir: str | None = None) -> dict:
+    """Compare DataFrame and Dataset annotation readers and report basic deltas."""
+    new_df = read_salami_annotations_hf(folder, cache_dir=cache_dir).to_pandas()
+    old_df = _read_salami_annotations(folder).copy()
+    
+    expected_cols = ["id", "functions", "uppercase", "lowercase"]
+    for col in expected_cols:
+        if col not in old_df.columns:
+            old_df[col] = [[] for _ in range(len(old_df))]
+        if col not in new_df.columns:
+            new_df[col] = [[] for _ in range(len(new_df))]
+
+    old_df = old_df[expected_cols].sort_values("id").reset_index(drop=True)
+    new_df = new_df[expected_cols].sort_values("id").reset_index(drop=True)
+
+    for col in ["functions", "uppercase", "lowercase"]:
+        old_df[col] = old_df[col].apply(lambda x: x if isinstance(x, list) else [])
+        new_df[col] = new_df[col].apply(lambda x: x if isinstance(x, list) else [])
+
+    old_ids = set(pd.to_numeric(old_df["id"], errors="coerce").dropna().astype(int))
+    new_ids = set(pd.to_numeric(new_df["id"], errors="coerce").dropna().astype(int))
+
+    return {
+        "equal": old_df.equals(new_df),
+        "old_rows": len(old_df),
+        "new_rows": len(new_df),
+        "old_only_ids": sorted(old_ids - new_ids),
+        "new_only_ids": sorted(new_ids - old_ids),
+    }
 
 
 def load_salami_metadata_for_benchmark(
@@ -244,7 +391,7 @@ def extract_segment_df_from_nll_dataset(
             seg = ex[seg_name]
             if isinstance(seg, Mapping):
                 segs = [seg]
-            elif isinstance(seg, list):
+            elif isinstance(seg, list) or isinstance(seg, np.ndarray):
                 segs = seg
             else:
                 raise ValueError(f"Expected dict or list for {seg_name}, got {type(seg)}")
@@ -285,7 +432,7 @@ def extract_segment_df_from_nll_dataset(
                         {
                             "id": ex["id"],
                             "seg_name": seg_name,
-                            "anidx": segment.get("anidx", -1),
+                            "anidx": segment.get("anidx", "-1"),
                             "noise_level": ex.get("noise_level", -1),
                             "type": type_,
                             "nrep": float(nrep),
@@ -331,7 +478,7 @@ def run_repetition_test(segment_df):
     df["mean_nll"] = pd.to_numeric(df["mean_nll"], errors="coerce")
 
     res = (
-        df.groupby(["id", "type"])
+        df.groupby(["id", "type"])[['mean_nll','nrep']]
         .apply(diff)
         .reset_index(drop=True)
         .dropna(subset=["diff_val"])
@@ -461,7 +608,16 @@ if __name__ == "__main__":
     # 2) SALAMI metadata merge
     # 3) segment extraction
     # 4) repetition hypothesis test
-    real_salami_metadata_df = load_salami_metadata_for_benchmark()
+    salami_root = Path("/opt/datasets/fs/salami")
+    # annotation_cmp = compare_salami_annotation_readers(
+    #     folder=salami_root,
+    #     cache_dir="/tmp/hf_salami_annotation_cache",
+    # )
+    # print("Annotation reader comparison:")
+    # print(annotation_cmp)
+
+    # real_salami_metadata_df = load_salami_metadata_for_benchmark()
+    real_salami_metadata_df = read_salami_annotations_hf(salami_root, cache_dir="/home/mathias/devel/python3/audio-it/ic_benchmark_suite/cache").to_pandas()
     # dataset  = Dataset.from_csv(['/home/mathias/devel/python3/audioic/salami/10.csv', '/home/mathias/devel/python3/audioic/salami/11.csv'])
     salami_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
     csv_paths = sorted(salami_csv_dir.glob('*.csv'), key=_salami_id_extractor)
