@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scipy.stats
+from datasets import Dataset
 
 
 def _to_pandas(segment_df):
@@ -230,10 +231,11 @@ def extract_segment_df_from_nll_dataset(
             nlls = nlls[:, None]
         elif nlls.ndim != 2:
             raise ValueError(f"nll should be 1D or 2D, got shape={nlls.shape}")
-
-        is_silence = np.asarray(ex["is_silence"], dtype=bool)
         nlls = nlls.copy()
-        nlls[is_silence] = np.nan
+        if "is_silence" in ex:
+            # raise ValueError("Missing required field 'is_silence' in example")
+            is_silence = np.asarray(ex["is_silence"], dtype=bool)
+            nlls[is_silence] = np.nan
 
         for seg_name in segment_names:
             if seg_name not in ex:
@@ -440,6 +442,17 @@ def _build_mock_salami_metadata_df():
             },
         ]
     )
+def _load_nll_csvs_as_rows(csv_paths) -> list:
+    rows = []
+    for p in csv_paths:
+        p = Path(p)
+        id_ = _salami_id_extractor(p)
+        df = pd.read_csv(p)
+        row = {"id": id_}
+        for col in df.columns:
+            row[col] = df[col].tolist()
+        rows.append(row)
+    return rows
 
 
 if __name__ == "__main__":
@@ -449,7 +462,12 @@ if __name__ == "__main__":
     # 3) segment extraction
     # 4) repetition hypothesis test
     real_salami_metadata_df = load_salami_metadata_for_benchmark()
-    mock_nll_dataset = _build_mock_nll_dataset_from_salami_spans(period_music_2_latent=0.093)
+    # dataset  = Dataset.from_csv(['/home/mathias/devel/python3/audioic/salami/10.csv', '/home/mathias/devel/python3/audioic/salami/11.csv'])
+    salami_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
+    csv_paths = sorted(salami_csv_dir.glob('*.csv'), key=_salami_id_extractor)
+    mock_nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
+    mock_nll_dataset = mock_nll_dataset.rename_column('IC', 'nll')
+    # mock_nll_dataset = _build_mock_nll_dataset_from_salami_spans(period_music_2_latent=0.093)
     compatibility = check_nll_dataset_compatibility(mock_nll_dataset, real_salami_metadata_df)
     print("NLL dataset compatibility:")
     print(compatibility)
