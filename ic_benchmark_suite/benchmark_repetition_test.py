@@ -189,29 +189,30 @@ def read_salami_annotations_hf(
 ) -> Dataset:
     """Read SALAMI annotations as a cached HF Dataset using parallel per-file parsing."""
     pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile[^_/]+_(functions|uppercase|lowercase)\.txt$")
-    paths = []
-    for p in (folder / "salami-data-public" / "annotations").rglob("textfile*_*.txt"):
-        path_str = str(p)
-        if keep_ids is not None:
-            match = pattern.match(path_str)
-            if match is None or int(match.group("id")) not in keep_ids:
-                continue
-        paths.append(path_str)
-    paths.sort()
 
-    if not paths:
-        return Dataset.from_list([])
+    def iter_paths(folder: Path, keep_ids: set[int] | None):
+        for p in (folder / "salami-data-public" / "annotations").rglob("textfile*_*.txt"):
+            path_str = str(p)
+            if keep_ids is not None:
+                match = pattern.match(path_str)
+                if match is None or int(match.group("id")) not in keep_ids:
+                    continue
+            yield {"path": path_str}
 
-    files_ds = Dataset.from_dict({"path": paths})
+    files_ds = Dataset.from_generator(
+        iter_paths,
+        gen_kwargs={"folder": folder, "keep_ids": keep_ids},
+        cache_dir=cache_dir,
+    ).sort("path")
     cache_file_name = None
-    # if cache_dir is not None:
-    #     cache_root = Path(cache_dir)
-    #     cache_root.mkdir(parents=True, exist_ok=True)
-    #     cache_file_name = str(cache_root / "salami_annotations_parsed.arrow")
+    if cache_dir is not None:
+        cache_root = Path(cache_dir)
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_file_name = str(cache_root / "salami_annotations_parsed.arrow")
 
     parsed = files_ds.map(
         _parse_salami_annotation_file,
-        num_proc=max(1, min(8, len(paths))),
+        num_proc=8,
         load_from_cache_file=True,
         cache_file_name=cache_file_name,
         features=_salami_parsed_features(),
@@ -455,7 +456,10 @@ def extract_segment_df_from_nll_dataset(
 
 def diff(x: pd.DataFrame) -> pd.DataFrame:
     """Notebook-equivalent differencing across repetition index."""
+    # TODO: remove ablation
+    # sorted_ = x.sample(frac=1.0, random_state=0)
     sorted_ = x.sort_values("nrep")
+    
     return sorted_.assign(diff_val=sorted_.mean_nll.diff())
 
 
@@ -477,13 +481,16 @@ def run_repetition_test(segment_df):
     df = df.copy()
     df["mean_nll"] = pd.to_numeric(df["mean_nll"], errors="coerce")
 
-    res = (
-        df.groupby(["id", "type"])[['mean_nll','nrep']]
-        .apply(diff)
-        .reset_index(drop=True)
-        .dropna(subset=["diff_val"])
-    )
+    # res = (
+    #     df.groupby(["id", "type", "anidx"])[['mean_nll','nrep']]
+    #     .apply(diff)
+    #     .reset_index(drop=True)
+    #     .dropna(subset=["diff_val"])
+    # )
 
+    df = df.sort_values(["id", "type", "anidx", "nrep"])
+    df["diff_val"] = df.groupby(["id", "type", "anidx"])["mean_nll"].diff()
+    res = df.dropna(subset=["diff_val"])
     stat_res = scipy.stats.ttest_1samp(res.diff_val, popmean=0.0, alternative="less")
     summary = pd.Series(
         [
@@ -499,96 +506,96 @@ def run_repetition_test(segment_df):
     return summary, res
 
 
-def _build_mock_nll_dataset(ids=None):
-    """Small mock NLL dataset with per-frame IC and silence mask."""
-    if ids is None:
-        ids = [1001, 1002]
-    if len(ids) < 2:
-        raise ValueError("ids should contain at least 2 values")
+# def _build_mock_nll_dataset(ids=None):
+#     """Small mock NLL dataset with per-frame IC and silence mask."""
+#     if ids is None:
+#         ids = [1001, 1002]
+#     if len(ids) < 2:
+#         raise ValueError("ids should contain at least 2 values")
 
-    return [
-        {
-            "id": int(ids[0]),
-            "noise_level": [0.0],
-            "nll": [-4.0, -3.7, -4.3, -3.9, -4.5, -4.0, -4.6, -4.1],
-            "is_silence": [False, False, False, False, False, False, False, False],
-        },
-        {
-            "id": int(ids[1]),
-            "noise_level": [0.0],
-            "nll": [-5.1, -4.9, -5.4, -5.0, -5.7, -5.1, -5.8, -5.2],
-            "is_silence": [False, False, False, False, False, False, False, False],
-        },
-    ]
-
-
-def _build_mock_nll_dataset_from_salami_spans(
-    period_music_2_latent: float = 0.093,
-):
-    """
-    Build two hardcoded mock rows using provided SALAMI ids and time spans:
-    - id 10: 0.0 to 314.269342403 sec
-    - id 100: 0.0 to 143.531587301 sec
-    """
-    end_time_by_id = {
-        10: 314.269342403,
-        100: 143.531587301,
-    }
-
-    rows = []
-    for sid in [10, 100]:
-        end_sec = end_time_by_id[sid]
-        n_frames = int(math.ceil(end_sec / period_music_2_latent))
-
-        # Smooth deterministic signal with slight id-specific offset.
-        t = np.arange(n_frames, dtype=float) * period_music_2_latent
-        phase = 0.3 if sid == 10 else 0.8
-        nll = -4.5 + 0.25 * np.sin(0.08 * t + phase)
-        if sid == 100:
-            nll = nll - 0.35
-
-        rows.append(
-            {
-                "id": sid,
-                "noise_level": [0.0],
-                "nll": nll.tolist(),
-                "is_silence": [False] * n_frames,
-            }
-        )
-
-    return rows
+#     return [
+#         {
+#             "id": int(ids[0]),
+#             "noise_level": [0.0],
+#             "nll": [-4.0, -3.7, -4.3, -3.9, -4.5, -4.0, -4.6, -4.1],
+#             "is_silence": [False, False, False, False, False, False, False, False],
+#         },
+#         {
+#             "id": int(ids[1]),
+#             "noise_level": [0.0],
+#             "nll": [-5.1, -4.9, -5.4, -5.0, -5.7, -5.1, -5.8, -5.2],
+#             "is_silence": [False, False, False, False, False, False, False, False],
+#         },
+#     ]
 
 
-def _build_mock_salami_metadata_df():
-    """Small mock SALAMI-style metadata with segment labels."""
-    return pd.DataFrame(
-        [
-            {
-                "id": 1001,
-                "part": "valid",
-                "lowercase": [
-                    {
-                        "anidx": 0,
-                        "start_sec": [0.0, 0.186, 0.372, 0.558],
-                        "end_sec": [0.186, 0.372, 0.558, 0.744],
-                        "type": ["a", "b", "a", "b"],
-                    }
-                ],
-            },
-            {
-                "id": 1002,
-                "part": "valid",
-                "lowercase": [
-                    {
-                        "anidx": 1,
-                        "start_sec": [0.0, 0.186, 0.372, 0.558],
-                        "end_sec": [0.186, 0.372, 0.558, 0.744],
-                        "type": ["a", "b", "a", "b"],
-                    }
-                ],
-            },
-        ]
-    )
+# def _build_mock_nll_dataset_from_salami_spans(
+#     period_music_2_latent: float = 0.093,
+# ):
+#     """
+#     Build two hardcoded mock rows using provided SALAMI ids and time spans:
+#     - id 10: 0.0 to 314.269342403 sec
+#     - id 100: 0.0 to 143.531587301 sec
+#     """
+#     end_time_by_id = {
+#         10: 314.269342403,
+#         100: 143.531587301,
+#     }
+
+#     rows = []
+#     for sid in [10, 100]:
+#         end_sec = end_time_by_id[sid]
+#         n_frames = int(math.ceil(end_sec / period_music_2_latent))
+
+#         # Smooth deterministic signal with slight id-specific offset.
+#         t = np.arange(n_frames, dtype=float) * period_music_2_latent
+#         phase = 0.3 if sid == 10 else 0.8
+#         nll = -4.5 + 0.25 * np.sin(0.08 * t + phase)
+#         if sid == 100:
+#             nll = nll - 0.35
+
+#         rows.append(
+#             {
+#                 "id": sid,
+#                 "noise_level": [0.0],
+#                 "nll": nll.tolist(),
+#                 "is_silence": [False] * n_frames,
+#             }
+#         )
+
+#     return rows
+
+
+# def _build_mock_salami_metadata_df():
+#     """Small mock SALAMI-style metadata with segment labels."""
+#     return pd.DataFrame(
+#         [
+#             {
+#                 "id": 1001,
+#                 "part": "valid",
+#                 "lowercase": [
+#                     {
+#                         "anidx": 0,
+#                         "start_sec": [0.0, 0.186, 0.372, 0.558],
+#                         "end_sec": [0.186, 0.372, 0.558, 0.744],
+#                         "type": ["a", "b", "a", "b"],
+#                     }
+#                 ],
+#             },
+#             {
+#                 "id": 1002,
+#                 "part": "valid",
+#                 "lowercase": [
+#                     {
+#                         "anidx": 1,
+#                         "start_sec": [0.0, 0.186, 0.372, 0.558],
+#                         "end_sec": [0.186, 0.372, 0.558, 0.744],
+#                         "type": ["a", "b", "a", "b"],
+#                     }
+#                 ],
+#             },
+#         ]
+#     )
 def _load_nll_csvs_as_rows(csv_paths) -> list:
     rows = []
     for p in csv_paths:
@@ -624,9 +631,9 @@ if __name__ == "__main__":
     mock_nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
     mock_nll_dataset = mock_nll_dataset.rename_column('IC', 'nll')
     # mock_nll_dataset = _build_mock_nll_dataset_from_salami_spans(period_music_2_latent=0.093)
-    compatibility = check_nll_dataset_compatibility(mock_nll_dataset, real_salami_metadata_df)
-    print("NLL dataset compatibility:")
-    print(compatibility)
+    # compatibility = check_nll_dataset_compatibility(mock_nll_dataset, real_salami_metadata_df)
+    # print("NLL dataset compatibility:")
+    # print(compatibility)
 
     merged_rows = merge_nll_with_salami_metadata(mock_nll_dataset, real_salami_metadata_df)
     segment_df = extract_segment_df_from_nll_dataset(
