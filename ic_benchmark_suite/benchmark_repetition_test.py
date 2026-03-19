@@ -115,12 +115,13 @@ def extract_segment_df_from_nll_dataset(
     nll_dataset,
     segment_names: List[str],
     period_music_2_latent: float,
+    value_column: str = "nll",
 ):
     """
     Build a segment-level table equivalent to the logic used in eval.py.
 
     Expected row fields in nll_dataset:
-    - id, nll, is_silence
+    - id, value_column, is_silence
     - optional: noise_level
     - each segment name in segment_names with value dict or list[dict]
       containing start_sec, end_sec, type, optional anidx
@@ -128,11 +129,14 @@ def extract_segment_df_from_nll_dataset(
     out_rows = []
 
     for ex in nll_dataset:
-        nlls = np.asarray(ex["nll"])
+        if value_column not in ex:
+            raise ValueError(f"Missing required field '{value_column}' in example")
+
+        nlls = np.asarray(ex[value_column])
         if nlls.ndim == 1:
             nlls = nlls[:, None]
         elif nlls.ndim != 2:
-            raise ValueError(f"nll should be 1D or 2D, got shape={nlls.shape}")
+            raise ValueError(f"{value_column} should be 1D or 2D, got shape={nlls.shape}")
         nlls = nlls.copy()
         if "is_silence" in ex:
             # raise ValueError("Missing required field 'is_silence' in example")
@@ -219,37 +223,101 @@ def run_repetition_test(segment_df):
     Returns:
         dict mapping seg_name -> (summary Series, residual DataFrame)
     """
+    return run_repetition_test_by_label(segment_df, label_col=None)
+
+
+def run_repetition_test_by_label(segment_df, label_col: str | None = "label"):
+    """Vectorized repetition test with optional per-label results.
+
+    When label_col is None, behaves like the previous single-label function and
+    returns: dict[seg_name] -> (summary, residual_df).
+
+    When label_col is set, returns nested results:
+    dict[label] -> dict[seg_name] -> (summary, residual_df).
+    """
     df = segment_df.copy()
 
-    required_cols = {"id", "type", "nrep", "mean_nll", "seg_name"}
+    required_cols = {"id", "type", "nrep", "mean_nll", "seg_name", "anidx"}
+    if label_col is not None:
+        required_cols.add(label_col)
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"segment_df is missing required columns: {sorted(missing)}")
 
     df["mean_nll"] = pd.to_numeric(df["mean_nll"], errors="coerce")
 
-    # TODO: possible do stronger statistical test, noting that there are multiple annotations per file
-    # and that the observations per annotation might not be independent.
-    results = {}
-    for seg_name in df["seg_name"].unique():
-        seg_df = df[df["seg_name"] == seg_name].copy()
-        seg_df = seg_df.sort_values(["id", "type", "anidx", "nrep"])
-        seg_df["diff_val"] = seg_df.groupby(["id", "type", "anidx"])["mean_nll"].diff()
-        res = seg_df.dropna(subset=["diff_val"])
-        stat_res = scipy.stats.ttest_1samp(res.diff_val, popmean=0.0, alternative="less")
-        summary = pd.Series(
-            [
-                res.diff_val.mean(),
-                stat_res.statistic,
-                stat_res.pvalue,
-                stat_res.df,
-                *stat_res.confidence_interval(0.95),
-            ],
-            index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
-        )
-        results[seg_name] = (summary, res)
+    sort_cols = ["seg_name", "id", "type", "anidx", "nrep"]
+    diff_group_cols = ["seg_name", "id", "type", "anidx"]
+    agg_group_cols = ["seg_name"]
 
-    return results
+    if label_col is not None:
+        sort_cols = [label_col] + sort_cols
+        diff_group_cols = [label_col] + diff_group_cols
+        agg_group_cols = [label_col] + agg_group_cols
+
+    df = df.sort_values(sort_cols)
+    df["diff_val"] = df.groupby(diff_group_cols)["mean_nll"].diff()
+    res = df.dropna(subset=["diff_val"]).copy()
+
+    if res.empty:
+        if label_col is None:
+            return {}
+        return {}
+
+    grouped = res.groupby(agg_group_cols)["diff_val"]
+    stats_df = grouped.agg(["mean", "std", "count"]).reset_index()
+    stats_df["df"] = stats_df["count"] - 1
+    stats_df["se"] = stats_df["std"] / np.sqrt(stats_df["count"])
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        stats_df["t_stat"] = stats_df["mean"] / stats_df["se"]
+
+    # One-sided (less) p-value and confidence bound using t-distribution.
+    stats_df["p_value"] = scipy.stats.t.cdf(stats_df["t_stat"], df=stats_df["df"])
+    t_crit = scipy.stats.t.ppf(0.95, df=stats_df["df"])
+    stats_df["conf_low"] = -np.inf
+    stats_df["conf_high"] = stats_df["mean"] + t_crit * stats_df["se"]
+
+    if label_col is None:
+        results = {}
+        for _, row in stats_df.iterrows():
+            seg_name = row["seg_name"]
+            summary = pd.Series(
+                [
+                    row["mean"],
+                    row["t_stat"],
+                    row["p_value"],
+                    row["df"],
+                    row["conf_low"],
+                    row["conf_high"],
+                ],
+                index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
+            )
+            seg_res = res[res["seg_name"] == seg_name].copy()
+            results[seg_name] = (summary, seg_res)
+        return results
+
+    results_by_label = {}
+    for label, label_stats_df in stats_df.groupby(label_col):
+        label_results = {}
+        for _, row in label_stats_df.iterrows():
+            seg_name = row["seg_name"]
+            summary = pd.Series(
+                [
+                    row["mean"],
+                    row["t_stat"],
+                    row["p_value"],
+                    row["df"],
+                    row["conf_low"],
+                    row["conf_high"],
+                ],
+                index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
+            )
+            seg_res = res[(res[label_col] == label) & (res["seg_name"] == seg_name)].copy()
+            label_results[seg_name] = (summary, seg_res)
+        results_by_label[label] = label_results
+
+    return results_by_label
 
 def _load_nll_csvs_as_rows(csv_paths) -> list:
     rows = []
@@ -264,24 +332,69 @@ def _load_nll_csvs_as_rows(csv_paths) -> list:
     return rows
 
 
-def repetition_decrease(nll_dataset, salami_root, periode_frames, n_proc=None, segment_names=['uppercase'], cache_dir=None):
+def repetition_decrease(
+    nll_dataset,
+    salami_root,
+    periode_frames,
+    n_proc=None,
+    segment_names=['uppercase'],
+    cache_dir=None,
+    value_column: str = "nll",
+):
     real_salami_metadata_df = read_salami_annotations_hf(salami_root, cache_dir=cache_dir, n_proc=n_proc).to_pandas()
     merged_rows = merge_nll_with_salami_metadata(nll_dataset, real_salami_metadata_df)
     segment_df = extract_segment_df_from_nll_dataset(
         nll_dataset=merged_rows,
         segment_names=segment_names,
         period_music_2_latent=periode_frames,
+        value_column=value_column,
     )
     results = run_repetition_test(segment_df)
     return results
 
+
+def repetition_decrease_for_labels(
+    nll_dataset,
+    salami_root,
+    periode_frames,
+    labels: List[str],
+    n_proc=None,
+    segment_names=['uppercase'],
+    cache_dir=None,
+):
+    """Run repetition tests for many labels at once using pandas-vectorized stats."""
+    if not labels:
+        raise ValueError("labels must not be empty")
+
+    available_columns = set(nll_dataset.column_names)
+    missing_cols = sorted({label for label in labels if label not in available_columns})
+    if missing_cols:
+        raise ValueError(f"Missing required columns in nll_dataset: {missing_cols}")
+
+    real_salami_metadata_df = read_salami_annotations_hf(salami_root, cache_dir=cache_dir, n_proc=n_proc).to_pandas()
+    merged_rows = merge_nll_with_salami_metadata(nll_dataset, real_salami_metadata_df)
+
+    segment_frames = []
+    for label in labels:
+        seg_df = extract_segment_df_from_nll_dataset(
+            nll_dataset=merged_rows,
+            segment_names=segment_names,
+            period_music_2_latent=periode_frames,
+            value_column=label,
+        )
+        seg_df["label"] = label
+        segment_frames.append(seg_df)
+
+    all_segment_df = pd.concat(segment_frames, ignore_index=True)
+    return run_repetition_test_by_label(all_segment_df, label_col="label")
+
 if __name__ == "__main__":
-    # nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
-    nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
+    labels = ["IC"]
+    nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
+    # labels = ["IC_0.0", "IC_0.5"]
+    # nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
     csv_paths = sorted(nll_csv_dir.glob('*.csv'), key=_salami_id_extractor)
     nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
-    # nll_dataset = nll_dataset.rename_column('IC', 'nll')
-    nll_dataset = nll_dataset.rename_column('IC_0.0', 'nll')
 
     n_proc = 8
     segment_names = ["lowercase", "uppercase", "functions"]
@@ -290,7 +403,16 @@ if __name__ == "__main__":
     # TODO, if not provided, we could assume something.
     periode_frames = 0.093
     salami_root = Path(salami_root)
-    results = repetition_decrease(nll_dataset, salami_root, periode_frames, n_proc, segment_names, cache_dir)
+    results_by_label = repetition_decrease_for_labels(
+        nll_dataset,
+        salami_root,
+        periode_frames,
+        labels=labels,
+        n_proc=n_proc,
+        segment_names=segment_names,
+        cache_dir=cache_dir,
+    )
+    results = results_by_label[labels[0]]
 
     summary_lowercase = results["lowercase"][0]
     expected_lowercase = {
