@@ -3,7 +3,7 @@ import re
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable, List, Mapping
+from typing import Any, Callable, Iterable, List, Mapping
 
 import einops
 import numpy as np
@@ -12,32 +12,6 @@ import scipy.stats
 import soundfile as sf
 from datasets import Dataset
 from datasets import load_from_disk
-
-
-
-def load_idyom_pitch_ic_from_npy(idyom_dir: Path) -> pd.DataFrame:
-	"""Load IDyOM pitch IC sequences from *.npy files.
-
-	Expected filename pattern: "{id}_song.npy".
-	Returns a DataFrame with columns: id, idyom_ic.
-	"""
-	rows = []
-	for p in sorted(idyom_dir.glob("*.npy")):
-		match = re.match(r"^(?P<id>\d+)_song$", p.stem)
-		if match is None:
-			continue
-		rows.append(
-			{
-				"id": int(match.group("id")),
-				"idyom_ic": np.asarray(np.load(p), dtype=float),
-			}
-		)
-
-	if not rows:
-		raise ValueError(f"No IDyOM .npy files found in {idyom_dir}")
-
-	return pd.DataFrame(rows).sort_values("id").reset_index(drop=True)
-
 
 # def _load_session_midi_files(
 # 	midi_path: Path = Path("/home/mathias/devel/python3/DSTM/data/session/"),
@@ -102,16 +76,13 @@ def synth_midi(
     audio = np.mean(audios, 0)
     return audio
 
-def _iter_session_note_onsets(midi_files: list[str], instruments):
+def _iter_midis(midi_files: list[str], instruments, id_path_extractor):
 	"""Yield note onset rows for session MIDI files."""
 	import pretty_midi
 	instruments = instruments['instruments'] if isinstance(instruments, dict) else instruments
 	for midi_path in midi_files:
 		p = Path(midi_path)
-		match = re.match(r"^sessiontune(?P<id>\d+)$", p.stem)
-		if match is None:
-			continue
-		session_id = int(match.group("id"))
+		id = id_path_extractor(midi_path)
 		midi = pretty_midi.PrettyMIDI(str(p))
 		if not midi.instruments:
 			continue
@@ -123,70 +94,17 @@ def _iter_session_note_onsets(midi_files: list[str], instruments):
 			audios[synth_inst] = buf.getvalue()
 
 		yield {
-				"session_id": session_id,
+				"id": id,
 				"onset": [note.start for instr in midi.instruments for note in instr.notes],
 				"audios": audios,
 		}
 
-
-def load_idyom_session_ic_from_csv(session_csv_path: Path) -> pd.DataFrame:
-	"""Load synthetic session IDyOM IC from a CSV export.
-
-	Expected merged_df-style columns include:
-	- session_id or melody.name (for example: sessiontune123)
-	- note.id
-	- cpitch.information.content
-	- onset
-
-	Returns a DataFrame with columns: id, idyom_ic, idyom_onset.
-	"""
-	df = pd.read_csv(session_csv_path)
-	required = {"note.id", "cpitch.information.content", "onset"}
-	missing = required - set(df.columns)
-	if missing:
-		raise ValueError(
-			f"session CSV is missing required columns: {sorted(missing)}"
-		)
-
-	if "session_id" in df.columns:
-		df = df.assign(id=pd.to_numeric(df["session_id"], errors="coerce"))
-	elif "melody.name" in df.columns:
-		id_series = (
-			df["melody.name"]
-			.astype(str)
-			.str.extract(r"sessiontune(?P<id>\d+)")["id"]
-		)
-		df = df.assign(id=pd.to_numeric(id_series, errors="coerce"))
-	else:
-		raise ValueError("session CSV must contain either 'session_id' or 'melody.name'")
-
-	df["cpitch.information.content"] = pd.to_numeric(
-		df["cpitch.information.content"],
-		errors="coerce",
-	)
-	df["note.id"] = pd.to_numeric(df["note.id"], errors="coerce")
-	df["onset"] = pd.to_numeric(df["onset"], errors="coerce")
-	df = df.dropna(subset=["id", "note.id", "cpitch.information.content", "onset"]).copy()
-	if df.empty:
-		raise ValueError(f"No usable session rows found in {session_csv_path}")
-
-	df["id"] = df["id"].astype(int)
-	df = df.sort_values(["id", "note.id", "onset"])
-
-	out = df.groupby("id", as_index=False).apply(
-		lambda g: pd.Series(
-			{
-				"idyom_ic": np.asarray(g["cpitch.information.content"].to_numpy(dtype=float), dtype=float),
-				"idyom_onset": np.asarray(g["onset"].to_numpy(dtype=float), dtype=float),
-			}
-		)
-	)
-	return out.sort_values("id").reset_index(drop=True)
-
-def load_idyom_session_ic_from_dat_dir(
+def load_idyom_from_dat_dir(
 	dat_dir: Path,
+	midi_dir: list[Path],
+	id_path_extractor: Callable[[str], int|str],
 	cache_dir: Path | None = None,
-	num_proc: int | None = 4,
+	num_proc: int | None = None,
 	instruments: list[str]  = ['Pad 1 (new age)', 'Synth Voice','Acoustic Guitar (nylon)', 'Acoustic Grand Piano','Trumpet'],
 	n_midis: int | None = None,
 ) -> pd.DataFrame:
@@ -194,11 +112,11 @@ def load_idyom_session_ic_from_dat_dir(
 
 	This follows notebooks/ismir25_iccorr.ipynb:
 	1) concat all *.dat into df_idyom_session
-	2) derive session_id from melody.name
+	2) derive id from melody.name
 	3) build session_onsets from SynthDataset midi files
-	4) merged_ = merge(df_idyom_session[['session_id','note.id','cpitch.information.content']],
-	                 session_onsets, on=['session_id','note.id'])
-	5) merged_df = merged_.set_index(['session_id','note.id'])
+	4) merged_ = merge(df_idyom_session[['id','note.id','cpitch.information.content']],
+	                 session_onsets, on=['id','note.id'])
+	5) merged_df = merged_.set_index(['id','note.id'])
 
 	Returns per-session rows with: id, idyom_ic, idyom_onset.
 	"""
@@ -208,7 +126,7 @@ def load_idyom_session_ic_from_dat_dir(
 
 	def _iter_dat_rows(paths):
 		for p in paths:
-			yield from pd.read_csv(p)[['melody.name', 'note.id', 'cpitch.information.content']].to_dict("records")
+			yield from pd.read_csv(p)[['melody.name', 'note.id', 'information.content', 'entropy']].to_dict("records")
 
 	ds_idyom_session = Dataset.from_generator(
     	_iter_dat_rows,
@@ -217,79 +135,47 @@ def load_idyom_session_ic_from_dat_dir(
     	num_proc=num_proc,
 
 	)
-	ds_idyom_session = ds_idyom_session.map(lambda x: {"session_id": int(x[len("sessiontune"):])}, num_proc=num_proc, input_columns=["melody.name"])
-	# ds_idyom_session = ds_idyom_session.filter(lambda session_id: session_id in midi_ids, num_proc=num_proc, input_columns=["session_id"])
-	# df_idyom_session = ds_idyom_session.to_pandas()
+	ds_idyom_session = ds_idyom_session.map(lambda x: {"id": id_path_extractor(x)}, num_proc=num_proc, input_columns=["melody.name"], remove_columns=["melody.name"])
 	df_idyom_session = (
-		ds_idyom_session.to_pandas().sort_values(["session_id", "note.id"])        # optional: control order inside array
-		.groupby("session_id", as_index=False)
+		ds_idyom_session.to_pandas().sort_values(["id", "note.id"])        # optional: control order inside array
+		.groupby("id", as_index=False)
 		.agg(
-      		idyom_ic=("cpitch.information.content", list),
-        	# note_ids=("note.id", list)
-		)           # or np.array
+      		idyom_ic=("information.content", list),
+			idyom_entropy=("entropy", list)
+		)
 	)
-	ids = df_idyom_session.session_id.unique()
+	# df_idyom_session = ds_idyom_session.to_pandas().sort_values(["id", "note.id"]) 
+	ids = df_idyom_session.id.unique()
 	ids = ids[:n_midis]
-	df_idyom_session = df_idyom_session[df_idyom_session.session_id.isin(ids)]
-	midi_files = [Path("/home/mathias/devel/python3/DSTM/data/session/sessiontune{}.mid".format(id_)) for id_ in ids]
-	assert [p.exists() for p in midi_files], f"Some MIDI files not found for session IDs: {ids}"
-	# midi_path = Path("/home/mathias/devel/python3/DSTM/data/session/")
-	# midi_files = np.array(list(midi_path.glob("sessiontune*.mid")))
-	# midi_ids = np.array([int(p.stem[len("sessiontune"):]) for p in midi_files])
-	# mask = (ids[None] == midi_ids[:, None])
-	# hehe = np.argmax(mask, axis=0)
-	# midi_files = midi_files[hehe]
-	# midi_sorted_idx  = np.argsort(midi_ids)
-	# midi_files = midi_files[midi_sorted_idx]
-	# midi_ids = midi_ids[midi_sorted_idx]
-	# midi_files = midi_files[:n_midis]
-	# midi_ids = set(midi_ids[:n_midis])
-	
-#  .to_pandas()
-# 	df_idyom_session["session_id"] = (
-# 		df_idyom_session["melody.name"]
-# 		.astype(str)
-# 		.map(lambda x: int(x[len("sessiontune") :]))
-# 	)
-	# df_idyom_session = df_idyom_session.sort_values(['session_id', 'note.id'])
-	# df_idyom_session[['session_id', 'note.id', 'cpitch.information.content']].pivot('note.id')
-	# midi_files = _load_session_midi_files()
-
+	df_idyom_session = df_idyom_session[df_idyom_session.id.isin(ids)]
+	midi_files = np.array(list(Path(midi_dir).glob("*.mid")))
+	midi_ids = np.array([id_path_extractor(str(p)) for p in midi_files])
+	mapper = np.argmax(midi_ids[None, :] == ids[:, None], axis=1)[:n_midis]
+	assert (midi_ids[mapper] == ids).all()
+	midi_files = midi_files[mapper]
 	gen_kwargs = dict(
      	midi_files=[str(p) for p in midi_files],
 		instruments={'instruments': instruments},
+		id_path_extractor=id_path_extractor,
 	)
-	session_onsets_ds = Dataset.from_generator(_iter_session_note_onsets, gen_kwargs=gen_kwargs, cache_dir=cache_dir, num_proc=num_proc)
-	# session_onsets = session_onsets_ds.to_pandas()
-
-	# merged_ = pd.merge(
-	# 	df_idyom_session.loc[:, ["session_id", "note.id", "cpitch.information.content"]],
-	# 	session_onsets,
-	# 	on=["session_id", "note.id"],
-	# 	how="inner",
-	# )
-	# merged_df = merged_.set_index(["session_id", "note.id"]).sort_index()
-
-	# out = []
-	# for session_id, g in merged_df.groupby(level=0):
-	# 	g = g.reset_index().sort_values("note.id")
-	# 	out.append(
-	# 		{
-	# 			"id": int(session_id),
-	# 			"idyom_ic": np.asarray(g["cpitch.information.content"].to_numpy(dtype=float), dtype=float),
-	# 			"idyom_onset": np.asarray(g["onset"].to_numpy(dtype=float), dtype=float),
-	# 		}
-	# 	)
-
-	# if not out:
-	# 	raise ValueError(f"No merged session IDyOM/onset rows produced from {dat_dir}")
-	# import datasets
-	# session_ds = datasets.concatenate_datasets([[ds_idyom_session, session_onsets_ds.remove_columns()],], axis=1)
-	concat = session_onsets_ds.add_column("idyom_ic", df_idyom_session["idyom_ic"])
+	session_onsets_ds = Dataset.from_generator(_iter_midis, gen_kwargs=gen_kwargs, cache_dir=cache_dir, num_proc=num_proc)
+	concat = session_onsets_ds.add_column("idyom_ic", df_idyom_session["idyom_ic"]).add_column("idyom_entropy", df_idyom_session["idyom_entropy"])
 	return concat
 
-
-def run_idyom_corr_test_for_labels(
+def idyom_ic_corr_session(ic_dataset: Dataset | Iterable[Mapping[str, Any]], periode_frames: float, labels: list[str], combine_inst: bool = True, remove_outliers: bool = False, cache_dir: str = '.'):
+    audio_ds = load_from_disk(f'{cache_dir}/datasets/session_ds')
+    idyom_df = audio_ds.remove_columns(['audios']).to_pandas().set_index('id')
+    idyom_df = idyom_df.drop(columns=['idyom_entropy'])
+    results =  idyom_corr(
+		ic_dataset=ic_dataset,
+		idyom_df=idyom_df,
+		periode_frames=periode_frames,
+        labels=labels,
+        combine_inst=combine_inst,
+        remove_outliers=remove_outliers,
+    )
+    return results
+def idyom_corr(
 	ic_dataset: Dataset | Iterable[Mapping[str, Any]],
  	idyom_df : pd.DataFrame,
 	periode_frames: float,
@@ -299,7 +185,7 @@ def run_idyom_corr_test_for_labels(
 ):
 	idyom_all = []
 	nlls_all = []
-	ic_dataset_df = pd.DataFrame(ic_dataset).sort_values(['session_id','instrument']).set_index('session_id')
+	ic_dataset_df = pd.DataFrame(ic_dataset).sort_values(['id','instrument']).set_index('id')
 	idyom_df = idyom_df.sort_index()
 	for song_id, (idyom_time, idyom_ic) in idyom_df.iterrows():
 		if len(idyom_ic) != len(idyom_time):
@@ -356,7 +242,7 @@ def run_idyom_corr_test(
 	idyom_positive_only: bool = True,
 ):
 	"""Single-label wrapper around run_idyom_corr_test_for_labels."""
-	return run_idyom_corr_test_for_labels(
+	return idyom_corr(
 		ic_dataset=ic_dataset,
 		idyom_df=idyom_df,
 		labels=[label],
@@ -366,3 +252,16 @@ def run_idyom_corr_test(
 	)
 
 
+if __name__ == "__main__":
+	session_dat_dir = "/home/mathias/devel/python3/audio-it/idyom/session_test_out_full_pitch"
+	midi_dir = Path("/home/mathias/devel/python3/DSTM/data/session/")
+	cache_dir = "/home/mathias/devel/python3/audio-it/ic_benchmark_suite/cache"
+	session_idyom_ds = load_idyom_from_dat_dir(
+     	Path(session_dat_dir),
+		midi_dir=midi_dir,
+		id_path_extractor = lambda x: int(Path(x).stem[len("sessiontune"):]),
+		cache_dir=cache_dir,
+		n_midis=200,
+		num_proc=60,
+	)
+	session_idyom_ds.save_to_disk(Path(cache_dir, "datasets/session_ds"))

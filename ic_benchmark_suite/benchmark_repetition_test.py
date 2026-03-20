@@ -389,10 +389,10 @@ def repetition_decrease_for_labels(
     return run_repetition_test_by_label(all_segment_df, label_col="label")
 
 if __name__ == "__main__":
-    labels = ["IC"]
-    nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
-    # labels = ["IC_0.0", "IC_0.5"]
-    # nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
+    # labels = ["IC"]
+    # nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
+    labels = ["IC_0.0", "IC_0.3", "IC_0.5"]
+    nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
     csv_paths = sorted(nll_csv_dir.glob('*.csv'), key=_salami_id_extractor)
     nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
 
@@ -401,7 +401,7 @@ if __name__ == "__main__":
     salami_root = "/opt/datasets/fs/salami"
     cache_dir = "/home/mathias/devel/python3/audio-it/ic_benchmark_suite/cache"
     # TODO, if not provided, we could assume something.
-    periode_frames = 0.093
+    periode_frames = 4096 / 44100
     salami_root = Path(salami_root)
     results_by_label = repetition_decrease_for_labels(
         nll_dataset,
