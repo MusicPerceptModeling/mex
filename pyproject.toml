@@ -5,19 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ic-benchmark-suite"
 version = "0.1.0"
-description = "IC benchmark suite with repetition-vs-IC evaluation utilities"
+description = "IC benchmark suite"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
   "pandas",
   "scipy",
+  "datasets",
+  "einops",
 ]
 
 [project.optional-dependencies]
 baselines = [
-  "audioic",
-  "pa-audioic @ git+https://github.com/CPJKU/pa-audioic",
+  "audioic @ git+https://github.com/SonyCSLParis/audioic",
+  "pa-audioic @ git+https://github.com/CPJKU/pa-audioic@entropy",
+ ]
+
+extras = [
+  "pyfluidsynth",
+  "pretty-midi",
+  "tqdm",
+  "soundfile",
 ]
 
 [tool.setuptools]

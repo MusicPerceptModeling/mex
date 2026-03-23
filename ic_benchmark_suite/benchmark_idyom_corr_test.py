@@ -1,6 +1,3 @@
-import math
-import re
-import json
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Mapping
@@ -9,7 +6,6 @@ import einops
 import numpy as np
 import pandas as pd
 import scipy.stats
-import soundfile as sf
 from datasets import Dataset
 from datasets import load_from_disk
 
@@ -79,6 +75,7 @@ def synth_midi(
 def _iter_midis(midi_files: list[str], instruments, id_path_extractor):
 	"""Yield note onset rows for session MIDI files."""
 	import pretty_midi
+	import soundfile as sf
 	instruments = instruments['instruments'] if isinstance(instruments, dict) else instruments
 	for midi_path in midi_files:
 		p = Path(midi_path)
@@ -164,10 +161,22 @@ def load_idyom_from_dat_dir(
 
 def idyom_ic_corr_session(ic_dataset: Dataset | Iterable[Mapping[str, Any]], periode_frames: float, labels: list[str], combine_inst: bool = True, remove_outliers: bool = False, cache_dir: str = '.'):
     audio_ds = load_from_disk(f'{cache_dir}/datasets/session_ds')
-    idyom_df = audio_ds.remove_columns(['audios']).to_pandas().set_index('id')
-    idyom_df = idyom_df.drop(columns=['idyom_entropy'])
+    idyom_df = audio_ds.remove_columns(['audios', 'idyom_entropy']).to_pandas().set_index('id')
     results =  idyom_corr(
-		ic_dataset=ic_dataset,
+		val_dataset=ic_dataset,
+		idyom_df=idyom_df,
+		periode_frames=periode_frames,
+        labels=labels,
+        combine_inst=combine_inst,
+        remove_outliers=remove_outliers,
+    )
+    return results
+
+def idyom_entropy_corr_session(ic_dataset: Dataset | Iterable[Mapping[str, Any]], periode_frames: float, labels: list[str], combine_inst: bool = True, remove_outliers: bool = False, cache_dir: str = '.'):
+    audio_ds = load_from_disk(f'{cache_dir}/datasets/session_ds')
+    idyom_df = audio_ds.remove_columns(['audios', 'idyom_ic']).to_pandas().set_index('id')
+    results =  idyom_corr(
+		val_dataset=ic_dataset,
 		idyom_df=idyom_df,
 		periode_frames=periode_frames,
         labels=labels,
@@ -176,7 +185,7 @@ def idyom_ic_corr_session(ic_dataset: Dataset | Iterable[Mapping[str, Any]], per
     )
     return results
 def idyom_corr(
-	ic_dataset: Dataset | Iterable[Mapping[str, Any]],
+	val_dataset: Dataset | Iterable[Mapping[str, Any]],
  	idyom_df : pd.DataFrame,
 	periode_frames: float,
 	labels: List[str] = ["ic"],
@@ -185,44 +194,44 @@ def idyom_corr(
 ):
 	idyom_all = []
 	nlls_all = []
-	ic_dataset_df = pd.DataFrame(ic_dataset).sort_values(['id','instrument']).set_index('id')
+	ic_dataset_df = pd.DataFrame(val_dataset).sort_values(['id','instrument']).set_index('id')
 	idyom_df = idyom_df.sort_index()
-	for song_id, (idyom_time, idyom_ic) in idyom_df.iterrows():
-		if len(idyom_ic) != len(idyom_time):
+	for song_id, (idyom_time, idyom_val) in idyom_df.iterrows():
+		if len(idyom_val) != len(idyom_time) or not song_id in ic_dataset_df.index :
 			continue
-		ic = ic_dataset_df.loc[song_id][labels].values
-		min_len = min(len(ic_) for ic_list in ic for ic_ in ic_list)
-		ic = np.array([[ic_[:min_len]  for ic_ in ic_list] for ic_list in ic])
+		val = ic_dataset_df.loc[song_id][labels].values
+		min_len = min(len(val_) for val_list in val for val_ in val_list)
+		val = np.array([[val_[:min_len]  for val_ in val_list] for val_list in val])
 
-		T = ic.shape[-1]
+		T = val.shape[-1]
 		time = np.arange(T) * periode_frames
-		idyom_ic_mask = np.ones_like(idyom_ic, dtype=bool)
+		idyom_mask = np.ones_like(idyom_val, dtype=bool)
 		if remove_outliers:
 			# remove too extreme values too
-			q = np.quantile(idyom_ic[idyom_ic_mask], 0.99)
-			idyom_ic_mask = idyom_ic_mask & (idyom_ic < q)
-		onset_times = idyom_time[idyom_ic_mask]
+			q = np.quantile(idyom_val[idyom_mask], 0.99)
+			idyom_mask = idyom_mask & (idyom_val < q)
+		onset_times = idyom_time[idyom_mask]
 		quantized_onset_times = np.searchsorted(time, onset_times)
-		ics_from_ours = []
-		window_size = 1
-		for j, i in zip(np.where(idyom_ic_mask)[0], quantized_onset_times):
-			window = ic[..., max(0, i - window_size) : i + window_size]
+		vals_from_ours = []
+		window_size = 1 # NOTE: window of two nearest frames.
+		for j, i in zip(np.where(idyom_mask)[0], quantized_onset_times):
+			window = val[..., max(0, i - window_size) : i + window_size]
 			if np.isnan(window).any():
-				idyom_ic_mask[j] = False
+				idyom_mask[j] = False
 			else:
 				window = window.mean(-1)
-				ics_from_ours.append(window)
-		ics_ours_ret = np.stack(ics_from_ours, -1)
-		idyom_ret = idyom_ic[idyom_ic_mask]
+				vals_from_ours.append(window)
+		vals_ours_ret = np.stack(vals_from_ours, -1)
+		idyom_ret = idyom_val[idyom_mask]
 		idyom_all.append(idyom_ret)
-		nlls_all.append(ics_ours_ret)
+		nlls_all.append(vals_ours_ret)
 	idyom_all = np.concatenate(idyom_all, -1)
 	nlls_all = np.concatenate(nlls_all, -1)
 	if combine_inst:
 		n_inst = nlls_all.shape[0]
 		nlls_all = einops.rearrange(nlls_all, 'n_inst n_labels t -> 1 n_labels (n_inst t )')
 		idyom_all = einops.repeat(idyom_all, 't -> (n_inst t)', n_inst=n_inst)
-		instruments = "combined"
+		instruments = ["combined"]
 	else:
 		instruments = ic_dataset_df.instrument.unique()
 	results = []
@@ -243,7 +252,7 @@ def run_idyom_corr_test(
 ):
 	"""Single-label wrapper around run_idyom_corr_test_for_labels."""
 	return idyom_corr(
-		ic_dataset=ic_dataset,
+		val_dataset=ic_dataset,
 		idyom_df=idyom_df,
 		labels=[label],
 		sr_idyom=sr_idyom,
