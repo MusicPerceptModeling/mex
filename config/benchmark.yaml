@@ -1,0 +1,8 @@
+benchmark:
+  task: idyom-consistency
+  cache_model: cache/ic/audioic_session_ic
+  ds_name: cache/datasets/session_ds_entropy
+  task_kwargs:
+    periode_frames: 0.0928798185941
+    combine_inst: true
+    remove_outliers: false

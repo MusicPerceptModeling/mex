@@ -1,0 +1,3 @@
+dataset_provider:
+    cache_dir: '/home/mathias/devel/python3/audio-it/it_benchmark_suite/cache'
+    hf_root: 'muthissar/music_surprisal_benchmarks'

@@ -1,0 +1,7 @@
+baseline:
+  model:
+    class_path: ic_benchmark_suite.baseline.audioic.AudioIC
+  audio_ds: cache/datasets/session_ds_entropy
+  cache_name: cache/ic/new_audioic
+  val: 'ic'
+  hub_upload: false

@@ -1,0 +1,6 @@
+create_idyom_ds:
+    ds_name: session_ds
+    session_dat_dir: "/home/mathias/devel/python3/audio-it/idyom/session_test_out_full_pitch"
+    midi_dir: "/home/mathias/devel/python3/DSTM/data/session/"
+    n_midis: 200
+    num_proc: 60
