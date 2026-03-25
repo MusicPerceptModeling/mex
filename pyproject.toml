@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+
+all = [
+    "ic-benchmark-suite[baselines]",
+    "ic-benchmark-suite[extras]",
+    "ic-benchmark-suite[tests]",
+    "ic-benchmark-suite[demo]",
+]
+
 baselines = [
   "audioic @ git+https://github.com/SonyCSLParis/audioic",
   "pa-audioic @ git+https://github.com/CPJKU/pa-audioic@entropy",
@@ -32,6 +40,10 @@ extras = [
 
 tests = [
   "pytest"
+]
+
+demo = [
+  "ipykernel"
 ]
 
 [tool.setuptools]
