@@ -61,11 +61,9 @@ def test_repetition():
         },
     ])
     results = repetition_decrease(
-        model_output=model_output,
+        model_outputs=model_output,
         metadata_ds=metadata_ds,
         periode_frames=1.0,
-        labels=['icc'],
-        annotation_names=['seg_anno'],
         time_offset_frame=1,
     )
     icc_win = [np.mean(icc[s:e+1])  for s, e in [(0, 2), (2, 5), (5, 8), (8, 11)]]

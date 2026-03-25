@@ -1,0 +1,8 @@
+benchmark:
+  task: repetition
+  cache_model: 'cache/ic/pa_audioic_salami_ic'
+  # cache_model: 'cache/ic/audioic_salami_ic'
+  ds_name: cache/datasets/salami_metadata_ds
+  task_kwargs:
+    periode_frames: 0.0928798185941
+    time_offset_frame: 1 # for IC 1 for entropy 0

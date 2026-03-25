@@ -339,27 +339,26 @@ def _load_nll_csvs_as_rows(csv_paths) -> list:
 
 
 def repetition_decrease(
-    model_output : Dataset,
+    model_outputs : Dataset,
     metadata_ds: Dataset,
     periode_frames : float,
-    labels: List[str],
     time_offset_frame : int = 0,
-    annotation_names=['uppercase'],
-    # cache_dir=None,
 ):
-    model_output = model_output.cast(model_output_scheme(labels))
+    labels = [col for col in model_outputs.column_names if col != "id"]
+    annotation_names = [col for col in metadata_ds.column_names if col != "id"]
+    model_outputs = model_outputs.cast(model_output_scheme(labels))
     metadata_ds = metadata_ds.cast(metadata_scheme(annotation_names))
     metadata_df = metadata_ds.to_pandas()
     """Run repetition tests for many labels at once using pandas-vectorized stats."""
     if not labels:
         raise ValueError("labels must not be empty")
 
-    available_columns = set(model_output.column_names)
+    available_columns = set(model_outputs.column_names)
     missing_cols = sorted({label for label in labels if label not in available_columns})
     if missing_cols:
         raise ValueError(f"Missing required columns in nll_dataset: {missing_cols}")
 
-    merged_rows = merge_val_with_metadata(model_output, metadata_df)
+    merged_rows = merge_val_with_metadata(model_outputs, metadata_df)
 
     segment_frames = []
     for label in labels:
@@ -378,14 +377,14 @@ def repetition_decrease(
 
 if __name__ == "__main__":
     # labels = ["IC"]
-    # nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
+    nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
     labels = ["IC_0.0", "IC_0.3", "IC_0.5"]
     nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
     csv_paths = sorted(nll_csv_dir.glob('*.csv'), key=_salami_id_extractor)
     nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
 
     n_proc = 8
-    segment_names = ["lowercase", "uppercase", "functions"]
+    # segment_names = ["lowercase", "uppercase", "functions"]
     salami_root = "/opt/datasets/fs/salami"
     cache_dir = "/home/mathias/devel/python3/audio-it/it_benchmark_suite/cache"
     # TODO, if not provided, we could assume something.
@@ -404,9 +403,7 @@ if __name__ == "__main__":
         nll_dataset,
         salami_metadata_ds,
         periode_frames,
-        labels=labels,
-        annotation_names=segment_names,
-        time_offset_frame=1,
+        time_offset_frame=0,
     )
     results = results_by_label[labels[0]]
 

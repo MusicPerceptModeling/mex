@@ -10,7 +10,7 @@ import datasets
 
 from ic_benchmark_suite.baseline import Baseline
 from ic_benchmark_suite import idyom_corr
-from ic_benchmark_suite.benchmark_repetition_test import _salami_parsed_features
+from ic_benchmark_suite.benchmark_repetition_test import repetition_decrease
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
 
@@ -64,6 +64,8 @@ class BenchmarkSuite:
                 task_ds = task_ds.remove_columns(['idyom_entropy'])
                 labels = ic_cols
 
+            # TODO: add scheme checking in idyom_corr
+            # TODO: handle time_offset_frame for ic/entropy.
             idyom_df = task_ds.to_pandas().set_index('id')
             results =  idyom_corr(
                 val_dataset=model_outputs,
@@ -73,10 +75,12 @@ class BenchmarkSuite:
             )
             print(results)
         elif task == 'repetition':
-            task_features = _salami_parsed_features()
-            # task_ds = task_ds.cast(task_features)
-            assert task_ds.features == task_features
-
+            results = repetition_decrease(
+                model_outputs=model_outputs,
+                metadata_ds=task_ds,
+                **task_kwargs
+            )
+            print({label: {annotation: res[annotation][0] for annotation in res} for label, res in results.items()})
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
     CLI(BenchmarkSuite, as_positional=True, default_config_files=[str(config_path)])
