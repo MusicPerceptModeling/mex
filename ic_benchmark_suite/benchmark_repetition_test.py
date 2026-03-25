@@ -346,8 +346,16 @@ def repetition_decrease(
 ):
     labels = [col for col in model_outputs.column_names if col != "id"]
     annotation_names = [col for col in metadata_ds.column_names if col != "id"]
-    model_outputs = model_outputs.cast(model_output_scheme(labels))
-    metadata_ds = metadata_ds.cast(metadata_scheme(annotation_names))
+    try:
+        scheme = model_output_scheme(labels)
+        model_outputs = model_outputs.cast(scheme)
+    except Exception:
+        raise ValueError(f"Error occurred while casting model_outputs. Expected Dataset scheme:\n{scheme}.\nActual scheme:\n{model_outputs.features}")
+    try:
+        scheme = metadata_scheme(annotation_names)
+        metadata_ds = metadata_ds.cast(scheme)
+    except Exception:
+        raise ValueError(f"Error occurred while casting metadata_ds. Expected Dataset scheme:\n{scheme}.\nActual scheme:\n{metadata_ds.features}")
     metadata_df = metadata_ds.to_pandas()
     """Run repetition tests for many labels at once using pandas-vectorized stats."""
     if not labels:
