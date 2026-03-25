@@ -10,6 +10,7 @@ import datasets
 
 from ic_benchmark_suite.baseline import Baseline
 from ic_benchmark_suite import idyom_corr
+from ic_benchmark_suite.benchmark_repetition_test import _salami_parsed_features
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
 
@@ -48,29 +49,33 @@ class BenchmarkSuite:
         self.dataset_provider.persist_ds(ic_ds, ds_name=cache_name, hub_upload=hub_upload)
 
     def benchmark(self, task: str, cache_model: str, ds_name: str, task_kwargs: dict = {}):
+        model_outputs = self.dataset_provider.get_ds(cache_model)
+        task_ds = self.dataset_provider.get_ds(ds_name)
         if task == 'idyom-consistency':
-            ic_ds = self.dataset_provider.get_ds(cache_model)
-            idyom_ds = self.dataset_provider.get_ds(ds_name)
-            if 'audios' in idyom_ds.column_names:
-                idyom_ds = idyom_ds.remove_columns(['audios'])
-            ic_cols = [col for col in ic_ds.column_names if col.startswith('ic')]
-            entr_cols = [col for col in ic_ds.column_names if col.startswith('entr')]
+            if 'audios' in task_ds.column_names:
+                task_ds = task_ds.remove_columns(['audios'])
+            ic_cols = [col for col in model_outputs.column_names if col.startswith('ic')]
+            entr_cols = [col for col in model_outputs.column_names if col.startswith('entr')]
             assert not (ic_cols and entr_cols), "IC dataset cannot contain columns starting with 'ic' and 'entr'."
             if entr_cols:
-                idyom_ds = idyom_ds.remove_columns(['idyom_ic'])
+                task_ds = task_ds.remove_columns(['idyom_ic'])
                 labels = entr_cols
             elif ic_cols:
-                idyom_ds = idyom_ds.remove_columns(['idyom_entropy'])
+                task_ds = task_ds.remove_columns(['idyom_entropy'])
                 labels = ic_cols
 
-            idyom_df = idyom_ds.to_pandas().set_index('id')
+            idyom_df = task_ds.to_pandas().set_index('id')
             results =  idyom_corr(
-                val_dataset=ic_ds,
+                val_dataset=model_outputs,
                 idyom_df=idyom_df,
                 labels=labels,
                 **task_kwargs
             )
             print(results)
+        elif task == 'repetition':
+            task_features = _salami_parsed_features()
+            # task_ds = task_ds.cast(task_features)
+            assert task_ds.features == task_features
 
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'

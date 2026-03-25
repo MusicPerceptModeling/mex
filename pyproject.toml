@@ -30,6 +30,10 @@ extras = [
   "soundfile",
 ]
 
+tests = [
+  "pytest"
+]
+
 [tool.setuptools]
 include-package-data = false
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scipy.stats
-from datasets import Dataset, Features, Sequence, Value
+from datasets import Dataset, Features, Sequence, Value, List as FList
 
 
 def _salami_id_extractor(path: Path) -> int:
@@ -54,6 +54,25 @@ def _salami_parsed_features() -> Features:
         }
     )
 
+def metadata_scheme(annotation_names: List[str]) -> Features:
+    return Features(
+        {
+            "id": Value("int64"),
+            **{f"{name}": FList({
+                "anidx": Value("string"),
+                "end_sec": Sequence(Value("float64")),
+                "start_sec": Sequence(Value("float64")),
+                "type": Sequence(Value("string")),
+            }) for name in annotation_names},
+        }
+    )
+def model_output_scheme(labels: List[str]) -> Features:
+    return Features(
+        {
+            "id": Value("int64"),
+            **{label: Sequence(Value("float64")) for label in labels}
+        }
+    )
 
 def read_salami_annotations_hf(
     folder: Path,
@@ -101,10 +120,9 @@ def read_salami_annotations_hf(
         segment_bucket.append(ex["segment"])
 
     rows = [by_id[id_] for id_ in sorted(by_id)]
-    return Dataset.from_list(rows)
+    return Dataset.from_list(rows, features=metadata_scheme(["functions", "lowercase", "uppercase"]))
 
-
-def merge_nll_with_salami_metadata(nll_dataset, salami_metadata_df):
+def merge_val_with_metadata(nll_dataset, salami_metadata_df):
     """Join nll rows with SALAMI metadata on id and return row dictionaries."""
     nll_df = nll_dataset.to_pandas()
     merged = nll_df.merge(salami_metadata_df, on="id", how="inner")
@@ -116,6 +134,7 @@ def extract_segment_df_from_nll_dataset(
     segment_names: List[str],
     period_music_2_latent: float,
     value_column: str = "nll",
+    time_offset_frame: int = 0,
 ):
     """
     Build a segment-level table equivalent to the logic used in eval.py.
@@ -171,9 +190,9 @@ def extract_segment_df_from_nll_dataset(
 
                 type_counts = {}
                 for i, (start, end, type_) in enumerate(zip(start_secs, end_secs, types)):
-                    start_frame = round(start / period_music_2_latent)
-                    end_frame = round(end / period_music_2_latent)
-                    nll_window = nlls_padded[start_frame:end_frame]
+                    start_frame = max(0, round(start / period_music_2_latent) - time_offset_frame)
+                    end_frame = max(0, round(end / period_music_2_latent) - time_offset_frame)
+                    nll_window = nlls_padded[start_frame:end_frame+1]
 
                     if len(nll_window) > 0:
                         mean_nll = np.nanmean(nll_window, axis=0).tolist()
@@ -212,21 +231,7 @@ def extract_segment_df_from_nll_dataset(
     return segment_df
 
 
-def run_repetition_test(segment_df):
-    """
-    Reproduce the notebook test per segment name:
-    - group by (id, type) within each segment name
-    - sort by nrep
-    - compute diff(mean_nll)
-    - one-sided t-test: mean(diff_val) < 0
-    
-    Returns:
-        dict mapping seg_name -> (summary Series, residual DataFrame)
-    """
-    return run_repetition_test_by_label(segment_df, label_col=None)
-
-
-def run_repetition_test_by_label(segment_df, label_col: str | None = "label"):
+def run_repetition_test(segment_df, label_col: str | None = "label"):
     """Vectorized repetition test with optional per-label results.
 
     When label_col is None, behaves like the previous single-label function and
@@ -332,61 +337,44 @@ def _load_nll_csvs_as_rows(csv_paths) -> list:
     return rows
 
 
+
 def repetition_decrease(
-    nll_dataset,
-    salami_root,
-    periode_frames,
-    n_proc=None,
-    segment_names=['uppercase'],
-    cache_dir=None,
-    value_column: str = "nll",
-):
-    real_salami_metadata_df = read_salami_annotations_hf(salami_root, cache_dir=cache_dir, n_proc=n_proc).to_pandas()
-    merged_rows = merge_nll_with_salami_metadata(nll_dataset, real_salami_metadata_df)
-    segment_df = extract_segment_df_from_nll_dataset(
-        nll_dataset=merged_rows,
-        segment_names=segment_names,
-        period_music_2_latent=periode_frames,
-        value_column=value_column,
-    )
-    results = run_repetition_test(segment_df)
-    return results
-
-
-def repetition_decrease_for_labels(
-    nll_dataset,
-    salami_root,
-    periode_frames,
+    model_output : Dataset,
+    metadata_ds: Dataset,
+    periode_frames : float,
     labels: List[str],
-    n_proc=None,
-    segment_names=['uppercase'],
-    cache_dir=None,
+    time_offset_frame : int = 0,
+    annotation_names=['uppercase'],
+    # cache_dir=None,
 ):
+    model_output = model_output.cast(model_output_scheme(labels))
+    metadata_ds = metadata_ds.cast(metadata_scheme(annotation_names))
+    metadata_df = metadata_ds.to_pandas()
     """Run repetition tests for many labels at once using pandas-vectorized stats."""
     if not labels:
         raise ValueError("labels must not be empty")
 
-    available_columns = set(nll_dataset.column_names)
+    available_columns = set(model_output.column_names)
     missing_cols = sorted({label for label in labels if label not in available_columns})
     if missing_cols:
         raise ValueError(f"Missing required columns in nll_dataset: {missing_cols}")
 
-    real_salami_metadata_df = read_salami_annotations_hf(salami_root, cache_dir=cache_dir, n_proc=n_proc).to_pandas()
-    merged_rows = merge_nll_with_salami_metadata(nll_dataset, real_salami_metadata_df)
+    merged_rows = merge_val_with_metadata(model_output, metadata_df)
 
     segment_frames = []
     for label in labels:
         seg_df = extract_segment_df_from_nll_dataset(
             nll_dataset=merged_rows,
-            segment_names=segment_names,
+            segment_names=annotation_names,
             period_music_2_latent=periode_frames,
             value_column=label,
+            time_offset_frame=time_offset_frame,
         )
         seg_df["label"] = label
         segment_frames.append(seg_df)
 
     all_segment_df = pd.concat(segment_frames, ignore_index=True)
-    return run_repetition_test_by_label(all_segment_df, label_col="label")
+    return run_repetition_test(all_segment_df, label_col="label")
 
 if __name__ == "__main__":
     # labels = ["IC"]
@@ -399,18 +387,26 @@ if __name__ == "__main__":
     n_proc = 8
     segment_names = ["lowercase", "uppercase", "functions"]
     salami_root = "/opt/datasets/fs/salami"
-    cache_dir = "/home/mathias/devel/python3/audio-it/ic_benchmark_suite/cache"
+    cache_dir = "/home/mathias/devel/python3/audio-it/it_benchmark_suite/cache"
     # TODO, if not provided, we could assume something.
     periode_frames = 4096 / 44100
     salami_root = Path(salami_root)
-    results_by_label = repetition_decrease_for_labels(
-        nll_dataset,
+    
+    salami_metadata_ds = read_salami_annotations_hf(
         salami_root,
+        cache_dir=cache_dir,
+        n_proc=n_proc
+    )
+    # salami_metadata_ds = salami_metadata_ds.cast(metadata_scheme())
+    # salami_metadata_df = salami_metadata_ds.to_pandas()
+    
+    results_by_label = repetition_decrease(
+        nll_dataset,
+        salami_metadata_ds,
         periode_frames,
         labels=labels,
-        n_proc=n_proc,
-        segment_names=segment_names,
-        cache_dir=cache_dir,
+        annotation_names=segment_names,
+        time_offset_frame=1,
     )
     results = results_by_label[labels[0]]
 
