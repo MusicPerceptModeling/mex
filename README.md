@@ -1,4 +1,4 @@
-# ic_benchmark_suite
+# music_surprisal_benchmarks
 
 Installable package for IC benchmark tasks.
 
