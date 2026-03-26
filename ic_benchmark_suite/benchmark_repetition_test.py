@@ -360,7 +360,6 @@ def repetition_decrease(
     """Run repetition tests for many labels at once using pandas-vectorized stats."""
     if not labels:
         raise ValueError("labels must not be empty")
-
     available_columns = set(model_outputs.column_names)
     missing_cols = sorted({label for label in labels if label not in available_columns})
     if missing_cols:
