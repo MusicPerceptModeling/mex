@@ -107,10 +107,10 @@ See the current benchmark entry point: [`repetition_decrease`](ic_benchmark_suit
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
-`metadata_ds` usually contains an `id` column, for matching predictions and audio data.
+`metadata_ds` usually contains an `id` column for matching predictions and audio data.
 
 Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
 
-Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically envolves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
+Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
 
 With the exception of the [`idyom_consistency`](ic_benchmark_suite/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
