@@ -97,7 +97,7 @@ Output columns:
 
 ## Contributing
 We warmly welcome adding benchmarks. 
-This, usually, requires implimenting a function that takes two [Huggingface `Dataset`](github.com/huggingface/datasets/) arguments:
+This, usually, requires implimenting a function that takes two [Huggingface `Dataset`](https://github.com/huggingface/datasets/) arguments:
 - `model_outputs`,
 - `metadata_ds`
 
