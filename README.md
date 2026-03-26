@@ -45,6 +45,7 @@ API:
 
 ```python
 import os
+from ic_benchmark_suite import repetition_decrease
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
 dataset_provider = DatasetProvider(
@@ -52,7 +53,19 @@ dataset_provider = DatasetProvider(
 	hf_root="muthissar/music_surprisal_benchmarks",
 	hf_token=os.environ.get("HF_ACCESS_TOKEN"),
 )
-model_output = dataset_provider.get_ds("audioic_salami_ic")
+
+# Get from hf_hub. For instance, for providing precomputed cache files where audio cannot be shared.
+model_outputs = dataset_provider.get_ds("audioic_salami_ic")
+# Get from local disk
+metadata_ds = dataset_provider.get_ds("./cache/datasets/salami_metadata_ds")
+
+results = repetition_decrease(
+    model_outputs=model_outputs,
+    metadata_ds=metadata_ds,
+    periode_frames = 0.0928798185941,
+    time_offset_frame =  1 # for IC 1 for entropy 0 
+)
+
 ```
 
 For a full runnable example, see [`demo.ipynb`](demo.ipynb).
