@@ -1,4 +1,4 @@
-# ic_benchmark_suite
+# music_surprisal_benchmarks
 
 Installable package for IC benchmark tasks.
 
@@ -45,6 +45,7 @@ API:
 
 ```python
 import os
+from ic_benchmark_suite import repetition_decrease
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
 dataset_provider = DatasetProvider(
@@ -52,7 +53,19 @@ dataset_provider = DatasetProvider(
 	hf_root="muthissar/music_surprisal_benchmarks",
 	hf_token=os.environ.get("HF_ACCESS_TOKEN"),
 )
-model_output = dataset_provider.get_ds("audioic_salami_ic")
+
+# Get from hf_hub. For instance, for providing precomputed cache files where audio cannot be shared.
+model_outputs = dataset_provider.get_ds("audioic_salami_ic")
+# Get from local disk
+metadata_ds = dataset_provider.get_ds("./cache/datasets/salami_metadata_ds")
+
+results = repetition_decrease(
+    model_outputs=model_outputs,
+    metadata_ds=metadata_ds,
+    periode_frames = 0.0928798185941,
+    time_offset_frame =  1 # for IC 1 for entropy 0 
+)
+
 ```
 
 For a full runnable example, see [`demo.ipynb`](demo.ipynb).
@@ -97,7 +110,7 @@ Output columns:
 
 ## Contributing
 We warmly welcome adding benchmarks. 
-This, usually, requires implimenting a function that takes two [Huggingface `Dataset`](github.com/huggingface/datasets/) arguments:
+This, usually, requires implimenting a function that takes two [Huggingface `Dataset`](https://github.com/huggingface/datasets/) arguments:
 - `model_outputs`,
 - `metadata_ds`
 
@@ -107,10 +120,10 @@ See the current benchmark entry point: [`repetition_decrease`](ic_benchmark_suit
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
-`metadata_ds` usually contains an `id` column, for matching predictions and audio data.
+`metadata_ds` usually contains an `id` column for matching predictions and audio data.
 
 Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
 
-Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically envolves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
+Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
 
 With the exception of the [`idyom_consistency`](ic_benchmark_suite/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
