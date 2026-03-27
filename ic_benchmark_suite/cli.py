@@ -52,25 +52,17 @@ class BenchmarkSuite:
         model_outputs = self.dataset_provider.get_ds(cache_model)
         task_ds = self.dataset_provider.get_ds(ds_name)
         if task == 'idyom-consistency':
-            if 'audios' in task_ds.column_names:
-                task_ds = task_ds.remove_columns(['audios'])
-            ic_cols = [col for col in model_outputs.column_names if col.startswith('ic')]
-            entr_cols = [col for col in model_outputs.column_names if col.startswith('entr')]
-            assert not (ic_cols and entr_cols), "IC dataset cannot contain columns starting with 'ic' and 'entr'."
-            if entr_cols:
-                task_ds = task_ds.remove_columns(['idyom_ic'])
-                labels = entr_cols
-            elif ic_cols:
-                task_ds = task_ds.remove_columns(['idyom_entropy'])
-                labels = ic_cols
+            try:
+                # TODO: make this self explainable. Deal with how arguments should be passed. Alternativey, we should make seperate methods for each task.
+                val = task_kwargs.pop('value')
+                task_ds = task_ds.select_columns(['id', 'onset', f'idyom_{val}']).rename_column(f'idyom_{val}', 'idyom_val')
+            except Exception as e:
+                raise ValueError("For idyom-consistency task, task_kwargs must contain 'value' key with value 'ic' or 'entropy'.") from e
 
-            # TODO: add scheme checking in idyom_corr
             # TODO: handle time_offset_frame for ic/entropy.
-            idyom_df = task_ds.to_pandas().set_index('id')
             results =  idyom_corr(
                 val_dataset=model_outputs,
-                idyom_df=idyom_df,
-                labels=labels,
+                idyom_ds=task_ds,
                 **task_kwargs
             )
             print(results)

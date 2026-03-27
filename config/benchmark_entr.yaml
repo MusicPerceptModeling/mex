@@ -6,3 +6,4 @@ benchmark:
     periode_frames: 0.0928798185941
     combine_inst: true
     remove_outliers: false
+    value: entropy

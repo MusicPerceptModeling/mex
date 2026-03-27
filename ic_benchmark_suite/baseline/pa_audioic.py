@@ -28,7 +28,7 @@ class PAAudioIC(Baseline):
                 results.append(result)
         entr_ds = datasets.Dataset.from_list(results)
         return entr_ds        
-    def entr(self, audio_ds : datasets.Dataset):
+    def entropy(self, audio_ds : datasets.Dataset):
         audio_type = 'music'
         results = []
         for ex in tqdm(audio_ds, desc="Computing Entropy"):
@@ -39,4 +39,8 @@ class PAAudioIC(Baseline):
                 result = {**{f'entr_{nl}': entr[0][i]  for i, nl in enumerate(self.noise_levels) }, 'id': ex['id'], 'instrument': instrument}
                 results.append(result)
         entr_ds = datasets.Dataset.from_list(results)
-        return entr_ds        
+        return entr_ds
+
+    @classmethod
+    def periode_frames(cls):
+        return 4096 / 44100

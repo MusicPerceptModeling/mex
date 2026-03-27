@@ -6,7 +6,7 @@ import einops
 import numpy as np
 import pandas as pd
 import scipy.stats
-from datasets import Dataset
+from datasets import Dataset, Value, List as FList, Features
 
 
 program_dict = {
@@ -147,17 +147,22 @@ def idyom_ds(
 
 def idyom_corr(
     val_dataset: Dataset | Iterable[Mapping[str, Any]],
-    idyom_df : pd.DataFrame,
+    idyom_ds : Dataset,
     periode_frames: float,
-    labels: List[str] = ["ic"],
     combine_inst: bool = True,
     remove_outliers: bool = False,
 ):
+    idyom_ds = idyom_ds.cast(Features({'id': Value('int64'), 'idyom_val': FList(Value('float64')), 'onset': FList(Value('float64'))}))
+    idyom_df = idyom_ds.to_pandas().set_index('id')
+    labels = [col for col in val_dataset.column_names if col not in ['id', 'instrument']]
+    val_dataset = val_dataset.cast(Features({**{col: FList(Value('float64')) for col in labels}, 'id': Value('int64'), 'instrument': Value('string')}))
     idyom_all = []
     nlls_all = []
     ic_dataset_df = pd.DataFrame(val_dataset).sort_values(['id','instrument']).set_index('id')
     idyom_df = idyom_df.sort_index()
-    for song_id, (idyom_time, idyom_val) in idyom_df.iterrows():
+    for song_id, row in idyom_df.iterrows():
+        idyom_val = row['idyom_val']
+        idyom_time = row['onset']
         if len(idyom_val) != len(idyom_time) or not song_id in ic_dataset_df.index :
             continue
         val = ic_dataset_df.loc[song_id][labels].values

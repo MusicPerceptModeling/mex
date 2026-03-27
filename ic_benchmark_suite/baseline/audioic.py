@@ -25,4 +25,7 @@ class AudioIC(Baseline):
                 ic = ic[0]
                 results.append({'id': ex['id'], 'instrument': instrument, 'ic': ic})
         ic_ds = datasets.Dataset.from_list(results)
-        return ic_ds        
+        return ic_ds
+    @classmethod
+    def periode_frames(cls):
+        return 4096/44100
