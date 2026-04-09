@@ -126,13 +126,13 @@ def merge_val_with_metadata(nll_dataset, salami_metadata_df):
     """Join nll rows with SALAMI metadata on id and return row dictionaries."""
     nll_df = nll_dataset.to_pandas()
     merged = nll_df.merge(salami_metadata_df, on="id", how="inner")
-    return merged.to_dict(orient="records")
+    return merged
 
 
 def extract_segment_df_from_nll_dataset(
     nll_dataset,
     segment_names: List[str],
-    period_music_2_latent: float,
+    period_frames: float,
     value_column: str = "nll",
     time_offset_frame: int = 0,
 ):
@@ -179,7 +179,7 @@ def extract_segment_df_from_nll_dataset(
                 start_secs = np.asarray(segment["start_sec"])
                 types = np.asarray(segment["type"])
 
-                frames = math.ceil(np.nanmax(end_secs) / period_music_2_latent)
+                frames = math.ceil(np.nanmax(end_secs) / period_frames)
                 pad_len = max(frames - len(nlls), 0)
                 if pad_len > 0:
                     pad = np.empty((pad_len, nlls.shape[1]))
@@ -190,8 +190,8 @@ def extract_segment_df_from_nll_dataset(
 
                 type_counts = {}
                 for i, (start, end, type_) in enumerate(zip(start_secs, end_secs, types)):
-                    start_frame = max(0, round(start / period_music_2_latent) - time_offset_frame)
-                    end_frame = max(0, round(end / period_music_2_latent) - time_offset_frame)
+                    start_frame = max(0, round(start / period_frames) - time_offset_frame)
+                    end_frame = max(0, round(end / period_frames) - time_offset_frame)
                     nll_window = nlls_padded[start_frame:end_frame+1]
 
                     if len(nll_window) > 0:
@@ -343,6 +343,7 @@ def repetition_decrease(
     metadata_ds: Dataset,
     periode_frames : float,
     time_offset_frame : int = 0,
+    normalize: bool = False,
 ):
     labels = [col for col in model_outputs.column_names if col != "id"]
     annotation_names = [col for col in metadata_ds.column_names if col != "id"]
@@ -364,15 +365,23 @@ def repetition_decrease(
     missing_cols = sorted({label for label in labels if label not in available_columns})
     if missing_cols:
         raise ValueError(f"Missing required columns in nll_dataset: {missing_cols}")
-
-    merged_rows = merge_val_with_metadata(model_outputs, metadata_df)
-
+    if normalize:
+        o = model_outputs.map(lambda *vals: {'sum': np.nansum(vals, axis=-1), 'counts': np.sum(~np.isnan(vals), axis=-1)}, input_columns=labels, remove_columns=model_outputs.column_names)
+        sums = np.sum(o['sum'], axis=0)
+        counts = np.sum(o['counts'], axis=0)
+        mean = sums/counts
+        # NOTE: possibly avoid overflow by extra computation step.
+        o = model_outputs.map(lambda *vals: {'sqsums': np.nansum((vals - mean[:, None])**2, axis=-1)}, input_columns=labels, remove_columns=model_outputs.column_names)
+        std = np.sqrt(np.sum(o['sqsums'], axis=0) / counts)
+        model_outputs = model_outputs.map(lambda *vals: {label: val for label, val in zip(labels, (vals - mean[:, None]) / std[:, None])}, remove_columns=labels, input_columns=labels)
+    merged = merge_val_with_metadata(model_outputs, metadata_df)
+    merged_rows = merged.to_dict(orient="records")
     segment_frames = []
     for label in labels:
         seg_df = extract_segment_df_from_nll_dataset(
             nll_dataset=merged_rows,
             segment_names=annotation_names,
-            period_music_2_latent=periode_frames,
+            period_frames=periode_frames,
             value_column=label,
             time_offset_frame=time_offset_frame,
         )

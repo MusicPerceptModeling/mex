@@ -127,3 +127,10 @@ Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from 
 Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
 
 With the exception of the [`idyom_consistency`](ic_benchmark_suite/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
+
+## License
+
+The project license has not been decided yet.
+The [LICENSE](LICENSE) file is intentionally empty for now.
+
+Code adapted from third-party projects (including `libfmp`) is acknowledged in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and remains under its original license terms.

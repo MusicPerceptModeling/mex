@@ -6,3 +6,4 @@ benchmark:
   task_kwargs:
     periode_frames: 0.0928798185941
     time_offset_frame: 1 # for IC 1 for entropy 0
+    normalize: true

@@ -11,6 +11,7 @@ import datasets
 from ic_benchmark_suite.baseline import Baseline
 from ic_benchmark_suite import idyom_corr
 from ic_benchmark_suite.benchmark_repetition_test import repetition_decrease
+from ic_benchmark_suite.benchmark_segment_boundary import segment_boundary_alignment
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
 
@@ -67,12 +68,19 @@ class BenchmarkSuite:
             )
             print(results)
         elif task == 'repetition':
+            model_outputs = model_outputs.remove_columns(['Time'])
             results = repetition_decrease(
                 model_outputs=model_outputs,
                 metadata_ds=task_ds,
                 **task_kwargs
             )
             print({label: {annotation: res[annotation][0] for annotation in res} for label, res in results.items()})
+        elif task == "segment-boundary-alignment":
+            results = segment_boundary_alignment(
+                model_outputs,
+                task_ds,
+            **task_kwargs)
+            print(results)
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
     CLI(BenchmarkSuite, as_positional=True, default_config_files=[str(config_path)])

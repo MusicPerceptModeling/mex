@@ -7,6 +7,7 @@ name = "ic-benchmark-suite"
 version = "0.1.0"
 description = "IC benchmark suite"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
   "numpy",
@@ -15,6 +16,7 @@ dependencies = [
   "datasets",
   "einops",
   "jsonargparse",
+  "mir_eval",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +29,7 @@ all = [
 ]
 
 baselines = [
-  "audioic @ git+https://github.com/SonyCSLParis/audioic",
+  "audioic @ git+https://github.com/SonyCSLParis/audioic@entropy",
   "pa-audioic @ git+https://github.com/CPJKU/pa-audioic@entropy",
  ]
 
