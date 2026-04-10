@@ -2,57 +2,65 @@ import numpy as np
 from mtrf.model import TRF
 from mtrf.stats import crossval, nested_crossval
 
-#I could cross validate correlations between EEG and stimulus waveform to find the best hardware delay, but there may be no need with TRF
+#from eeg_utils.mtrf.matrices import banded_regularization
+
+#from eeg_utils.mtrf.stats import *
+
+from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackknife_corr
+
+from eeg_utils.utils.fastcorr import *
+
+#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation , and the Bach dataset too
+#TO DO : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw
+#TO DO : check if the envelope is itself significant to predict EEG, maybe think of other features to check 
+#NB: Giorgia didn't use banded_regularization
+
+#TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
 
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
     r_clipped = np.clip(r, -0.999, 0.999)
     return np.arctanh(r_clipped)
 
-def compare_direct_models(stimuli_list, eeg_list, fs):#, lambda_val=1.0):
+def compare_direct_models(stimuli_list, eeg_list, fs):
     """
-    Method 1: simple comparison between baseline (energy only) and full (energy + IC).
-
-    Parameters:
-    - stimuli_list: list of 2D arrays (n_samples, 2). Col 0 = E, Col 1 = IC.
-    - eeg_list: list of 2D arrays (n_samples, n_channels).
-
-    Returns: z_full, z_base, delta_z (all shape: n_channels,)
+    Method 1: Comparison between baseline (energy only) and full (energy + IC) 
+    using the official mTRFpy Ridge Regression.
     """
-    tmin, tmax = -0.1, 0.7 #time window [-100,700]ms
+    tmin, tmax = -0.1, 0.7 
     k_folds = -1  # Leave-One-Out CV
     regularization = np.logspace(-1, 4, 6)
     trf = TRF(direction=1)
 
-    # baseline stimuli (Energy Only - column 0)
-    baseline_stimuli = [stim[:, 0:1] for stim in stimuli_list]#0:1 slicing keeps it a 2D array, which mTRFpy expects
-
-    # baseline model (E only)
+    # Baseline model (Energy only)
+    baseline_stimuli = [stim[:, 0:1] for stim in stimuli_list]
     print("Fitting Baseline Model (Energy only)...") 
     r_base, best_lambdas_base = nested_crossval(trf, baseline_stimuli, eeg_list, fs, tmin, tmax, regularization, k=k_folds, average=True, verbose=False)
-    opt_lambda = np.median(best_lambdas_base)
-    r_base = crossval(trf, baseline_stimuli, eeg_list, fs, tmin, tmax, opt_lambda, k=k_folds, average=False, verbose=False)
-    if r_base.ndim==2:
-        print("averaging r across trials but not across channels (average is False in cross_val")
-        r_base=np.mean(r_base, axis=0)
+    opt_lambda_env = np.median(best_lambdas_base)
+    
+    r_base = crossval(trf, baseline_stimuli, eeg_list, fs, tmin, tmax, opt_lambda_env, k=k_folds, average=False, verbose=False)
+    if r_base.ndim == 2:
+        r_base = np.mean(r_base, axis=0)
     z_base = fisher_z_transform(r_base)
-    print(f'Best energy only model regularization parameter: {opt_lambda}')
+    print(f'Best energy-only regularization parameter: {opt_lambda_env}')
 
-    # full model (E + IC) #TO DO : have a different regularization lambda for each feature would make our claims stronger 
+
+    # Full model (Energy + IC)
     print("Fitting Full Model (Energy + IC)...")
+    # Because both predictors are Z-scored, standard Ridge without banded regularization should be okay 
     r_full, best_lambdas_full = nested_crossval(trf, stimuli_list, eeg_list, fs, tmin, tmax, regularization, k=k_folds, average=True, verbose=False)
-    opt_lambda = np.median(best_lambdas_full)
-    r_full = crossval(trf, stimuli_list, eeg_list, fs, tmin, tmax, opt_lambda, k=k_folds, average=False, verbose=False)
-    if r_full.ndim==2:
-        print("averaging r across trials")
-        r_full=np.mean(r_full, axis=0)
-    z_full = fisher_z_transform(r_full)
-    print(f'Best full model regularization parameter: {opt_lambda}')
+    opt_lambda_full = np.median(best_lambdas_full)
 
-    # predictive enhancement
+    r_full = crossval(trf, stimuli_list, eeg_list, fs, tmin, tmax, opt_lambda_full, k=k_folds, average=False, verbose=False)
+    
+    if r_full.ndim == 2:
+        r_full = np.mean(r_full, axis=0)
+    z_full = fisher_z_transform(r_full)
+
+    # Predictive enhancement
     delta_z = z_full - z_base
 
-    return z_full, z_base, delta_z, opt_lambda
+    return z_full, z_base, delta_z, opt_lambda_full
 
 
 def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):
@@ -121,6 +129,69 @@ def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_p
 
     return z_full, z_null_mean, delta_z_null, p_values
 
+
+def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full, n_perms=100): #BEST OPTION
+    """
+    State-of-the-Art Null Distribution: 
+    Predicts EEG using the acoustic/IC features from the WRONG epochs.
+    Perfectly preserves autocorrelation while destroying mutual information.
+    """
+    tmin, tmax = -0.1, 0.7
+    k_folds = -1
+    n_channels = eeg_list[0].shape[1]
+    n_epochs = len(stimuli_list)
+    
+    if n_epochs < 3:
+        raise ValueError("Not enough epochs to perform rigorous mismatching.")
+
+    trf = TRF(direction=1)
+    
+    # Evaluate True Model (using the banded lambdas you already found)
+    print("Fitting True Model for Permutation Testing...")
+    r_full = crossval(
+        trf, stimuli_list, eeg_list, fs, tmin, tmax, 
+        regularization=opt_lambda_full, bands=[1, 1], method='banded', 
+        k=k_folds, average=False, verbose=False
+    )
+    if r_full.ndim == 2:
+        r_full = np.mean(r_full, axis=0)
+    z_full = fisher_z_transform(r_full)
+
+    # Generate Null Distribution via Mismatching
+    print(f"Generating Null Distribution with {n_perms} Mismatched Permutations...")
+    z_null_permutations = np.zeros((n_perms, n_channels))
+
+    for p in range(n_perms):
+        # Create a shuffled index list ensuring no epoch matches its original index (Derangement)
+        shuffled_indices = np.arange(n_epochs)
+        while np.any(shuffled_indices == np.arange(n_epochs)):
+            np.random.shuffle(shuffled_indices)
+            
+        # Reorder the stimuli list based on the mismatched indices
+        mismatched_stimuli = [stimuli_list[i] for i in shuffled_indices]
+
+        # Fit the model on the completely mismatched data
+        r_null = crossval(
+            trf, mismatched_stimuli, eeg_list, fs, tmin, tmax, 
+            regularization=opt_lambda_full, bands=[1, 1], method='banded', 
+            k=k_folds, average=False, verbose=False
+        )
+        
+        if r_null.ndim == 2:
+            r_null = np.mean(r_null, axis=0)
+            
+        z_null_permutations[p, :] = fisher_z_transform(r_null)
+
+    # Calculate Statistics
+    z_null_mean = np.mean(z_null_permutations, axis=0)
+    delta_z_null = z_full - z_null_mean
+
+    # Empirical p-value: What % of random mismatches accidentally beat the true model?
+    p_values = np.sum(z_null_permutations >= z_full, axis=0) / n_perms
+
+    return z_full, z_null_mean, delta_z_null, p_values
+
+#I could cross validate correlations between EEG and stimulus waveform to find the best hardware delay, but there may be no need with TRF
 """
 # Example Usage
 if __name__ == "__main__":
@@ -203,7 +274,7 @@ def plot_static_score_topomap(
         cmap=cmap,
         vlim=(vmin, vmax), # Locks the color scale if provided
         show=False,
-        extrapolate='local' # Prevents bleeding outside the head circle
+        extrapolate='head' # Prevents bleeding outside the head circle
     )
     
     ax.set_title(f"Spatial Distribution of Model Accuracy\nParticipant: {subj_id}")
@@ -253,6 +324,7 @@ def plot_participant_trf_topomaps(
     
     return fig
 
+
 def plot_group_level_topomap(
     mean_scores: np.ndarray, 
     ch_names: list, 
@@ -286,7 +358,7 @@ def plot_group_level_topomap(
         mask=significant_mask,      
         mask_params=mask_params,    
         show=False,
-        extrapolate='local'
+        extrapolate='head'
     )
     
     ax.set_title("Group-Level Predictive Enhancement\n(White dots = FDR corrected p < 0.05)")
@@ -330,7 +402,10 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
     - aligned_features: Continuous array of shape (eeg_length, 2) [Envelope, IC]
     """
     eeg_fs = raw.info['sfreq']
+    print(eeg_fs)
     eeg_length = raw.n_times
+    #TO DO : downsample eeg to 64 Hz or even 30Hz
+    #band-pass filter, for instance between 1 and 30 Hz
     
     # Extract only the 'music' channel
     music_data, times = raw.get_data(picks=['music'], return_times=True)
@@ -421,8 +496,8 @@ from mtrf.model import TRF
 
 def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7):
     """
-    Loops through an OpenNeuro BIDS dataset, aligns data, runs TRF, 
-    and computes group-level summary statistics.
+    Loops through an OpenNeuro BIDS dataset, aligns data, runs Banded TRF, 
+    and computes robust group-level non-parametric summary statistics.
     """
     subject_folders = sorted(glob.glob(os.path.join(bids_root_dir, "sub-*")))
     if not subject_folders:
@@ -432,7 +507,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
     channel_names = None
     eeg_fs = None 
     
-    # Standard 10-20 channels used for mapping (excluding joysticks and ECG)
+    # Standard 10-20 channels used for mapping
     eeg_only_names = [
         'FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
         'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
@@ -454,7 +529,6 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             continue
             
         for edf_file in edf_files:
-            # I skip the generated music tasks for now
             if "genMusic" in edf_file:
                 continue
 
@@ -464,7 +538,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 eeg_fs = raw.info['sfreq']
             
             try:
-                # aligning stimuli with the 'music' trigger channel
+                # Align stimuli
                 aligned_stim = choose_stimulus_and_align_to_eeg(
                     raw=raw, 
                     env_dir=env_dir, 
@@ -473,43 +547,36 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                     ic_dt=ic_dt
                 )
                 
-                # dropping technical channels (keeping joysticks/ECG for the TRF)
+                # Drop technical channels
                 technical_channels = ['music', 'trialtype', 'nback_stimuli', 'nback_keypress', 'POz']
                 channels_to_drop = [ch for ch in technical_channels if ch in raw.ch_names]
                 if channels_to_drop:
                     raw.drop_channels(channels_to_drop)
 
-                # remaining channels (EEG + Misc/Joysticks)
                 picks = mne.pick_types(raw.info, eeg=True, misc=True, stim=True)
                 
-                # list of channels being fed to the TRF
                 if channel_names is None:
                     channel_names = [raw.ch_names[i] for i in picks]
                     
-                # Extract EEG data matrix (Transpose for mTRFpy -> Time x Channels)
                 raw_eeg_trial = raw.get_data(picks=picks).T 
                 
+                # chunking and Z-Scoring
                 valid_indices = np.where(aligned_stim[:, 0] > 0)[0]
                 
                 if len(valid_indices) == 0:
-                    print("  [!] No valid stimuli data found. Skipping EDF.")
                     continue
                     
-                # Find gaps in the valid indices to separate songs
                 split_points = np.where(np.diff(valid_indices) > 1)[0] + 1
                 valid_blocks = np.split(valid_indices, split_points)
                 
                 for block in valid_blocks:
-                    # Ensure the block is at least 10 seconds long
                     if len(block) > (10 * eeg_fs):
-                        chunk_size = int(30 * eeg_fs) # 30-second epochs
+                        chunk_size = int(30 * eeg_fs) 
                         
                         for i in range(0, len(block), chunk_size):
                             chunk_idx = block[i : i + chunk_size]
                             
-                            # Ensure the final chunk isn't tiny (must be at least 15s)
                             if len(chunk_idx) > (15 * eeg_fs):
-                                # Z-score to standardize scale, ignoring flat-line warnings
                                 with np.errstate(divide='ignore', invalid='ignore'):
                                     chunk_stim = np.nan_to_num(zscore(aligned_stim[chunk_idx, :], axis=0))
                                     chunk_eeg = np.nan_to_num(zscore(raw_eeg_trial[chunk_idx, :], axis=0))
@@ -524,24 +591,24 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         # ====================================================================
         # Subject-Level TRF Pipeline
         if not stimuli_list:
-            print(f"Skipping {subj_id} TRF: No valid epoched trials available.")
             continue
             
         try:
-            print(f"  -> Fitting Direct Models (Cross-Validation on {len(stimuli_list)} epochs)...")
-            z_full, z_base, delta_z, opt_lambda = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
+            print(f"  -> Fitting direct models (Cross-Validation on {len(stimuli_list)} epochs)...")
+
+            z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
+            
             delta_z = np.nan_to_num(delta_z, nan=0.0)
             all_delta_z.append(delta_z)
             print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
 
-            #plotting only the valid eeg channels
+            # plotting
             eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
             valid_eeg_names = [channel_names[i] for i in eeg_indices]
             scalp_scores = delta_z[eeg_indices]
 
             os.makedirs("results", exist_ok=True)
 
-            # Static Topomap (scalp only)
             fig = plot_static_score_topomap(
                 scores=scalp_scores, 
                 ch_names=valid_eeg_names, 
@@ -553,13 +620,31 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             fig.savefig(f"results/topomap_{subj_id}_delta_z.png", dpi=300)
             plt.close(fig) 
 
-            # Fit Final Full Model on all data to extract Spatiotemporal weights
+            """# Fit Final Full Model with Banded Constraints
             print(f"  -> Fitting final Full Model to extract weights...")
             all_stimuli_concat = np.vstack(stimuli_list)
             all_eeg_concat = np.vstack(eeg_list)
 
             final_trf = TRF(direction=1)
-            opt_lam_full = opt_lambda
+
+            #training specifically with the banded framework
+            final_trf.train(
+                all_stimuli_concat, 
+                all_eeg_concat, 
+                eeg_fs, 
+                tmin=-0.1, 
+                tmax=0.7, 
+                regularization=opt_lambda_full, # Passed as a list [l_env, l_ic]
+                bands=[1, 1],                   # Tell mTRFpy the dimensions of the bands
+                method='banded'                 
+            )"""
+            
+            # Fit final full model 
+            print(f"  -> Fitting final full model to extract weights...")
+            all_stimuli_concat = np.vstack(stimuli_list)
+            all_eeg_concat = np.vstack(eeg_list)
+
+            final_trf = TRF(direction=1)
 
             final_trf.train(
                 all_stimuli_concat, 
@@ -567,11 +652,9 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 eeg_fs, 
                 tmin=-0.1, 
                 tmax=0.7, 
-                regularization=opt_lam_full
+                regularization=opt_lambda_full
             )
 
-            # Slice the TRF weights matrix so it only contains the scalp channels
-            # mTRFpy weights shape: (n_features, n_lags, n_channels)
             sliced_weights = final_trf.weights[:, :, eeg_indices]
             final_trf.weights = sliced_weights 
 
@@ -581,7 +664,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 fs=eeg_fs,
                 tmin=-0.1,
                 subj_id=subj_id,
-                feature_idx=1, # Column 1 is IC
+                feature_idx=1,
                 feature_name="Information Content (IC)",
                 times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5] 
             )
@@ -592,46 +675,62 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             print(f"Failed to process {subj_id} TRF: {e}")
             continue
 
-    # ====================================================================
-    # Group-Level Statistics
     if not all_delta_z:
         raise RuntimeError("No subjects were successfully processed.")
+
+    # ====================================================================
+    # Group-Level Statistics 
 
     print("\n==========================================")
     print(" Computing Group-Level Statistics...")
     print("==========================================")
     
     group_delta_z = np.stack(all_delta_z, axis=0) 
-    mean_delta_z = np.mean(group_delta_z, axis=0)
-    std_delta_z = np.std(group_delta_z, axis=0)
     
-    t_stats, p_values = ttest_1samp(group_delta_z, popmean=0.0, axis=0, alternative='greater')
+    eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
+    valid_eeg_names = [channel_names[i] for i in eeg_indices]
+    
+    # Shape becomes (18 subjects, 30 channels)
+    eeg_group_delta_z = group_delta_z[:, eeg_indices]
+    
+    mean_delta_z = np.mean(eeg_group_delta_z, axis=0)
+    std_delta_z = np.std(eeg_group_delta_z, axis=0)
+    
+    #Run the Non-Parametric Jackknife testing on the 30 scalp electrodes
+    p_values = []
+    for ch in range(eeg_group_delta_z.shape[1]):
+        try:
+            _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
+        except Exception:
+            # Fallback to standard Wilcoxon if jackknife fails
+            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') #NB: a simple t test is also an option but only if the normality condition is verified
+            p = res.pvalue
+        p_values.append(p)
+        
+    p_values = np.array(p_values)
+    
+    # FDR correction to the 30 valid p-values
     reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
     significant_channels = np.where(reject_null)[0]
     
-    print(f"Total Subjects Processed: {group_delta_z.shape[0]}")
-    print(f"Overall Mean Enhancement: {np.mean(mean_delta_z):.4f}")
-    
-    # We can print significant findings for ALL channels (including joysticks!)
-    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(channel_names)}")
+    print(f"Total Subjects Processed: {eeg_group_delta_z.shape[0]}")
+    print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
+    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
     
     if len(significant_channels) > 0:
         print("\nSignificant Channels (FDR Corrected):")
         for ch_idx in significant_channels:
-            print(f" - {channel_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
+            print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
 
+    # Re-map the outputs back to the original dictionary format so the __main__ block doesn't break
     return {
         "mean_delta_z": mean_delta_z,
         "std_delta_z": std_delta_z,
         "p_values_raw": p_values,
         "p_values_fdr": p_values_fdr,
         "significant_mask": reject_null,
-        "channel_names": channel_names
+        "channel_names": valid_eeg_names
     }
-                        
- 
-
-
 
 
 if  __name__ == "__main__":
@@ -640,31 +739,10 @@ if  __name__ == "__main__":
 
     results = run_group_level_analysis(bids_path, "enveloppe_of_stimuli", "ic_curves_global_stimuli")
     
-    # standard scalp channels to keep
-    eeg_only_names = [
-        'FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
-        'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
-        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
-    ]
-    
-    channel_names = results["channel_names"]
-    
-    # indices of just the scalp channels
-    eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
-    valid_eeg_names = [channel_names[i] for i in eeg_indices]
-    
-
-    scalp_mean_z = results["mean_delta_z"][eeg_indices]
-    
-    if results["significant_mask"] is not None:
-        scalp_mask = results["significant_mask"][eeg_indices]
-    else:
-        scalp_mask = None
-
     fig = plot_group_level_topomap(
-        mean_scores=scalp_mean_z,
-        ch_names=valid_eeg_names,
-        significant_mask=scalp_mask,
+        mean_scores=results["mean_delta_z"],
+        ch_names=results["channel_names"],
+        significant_mask=results["significant_mask"],
         score_type="Mean Δz",
         cmap="Reds",
         vmin=0.0
