@@ -10,7 +10,7 @@ import datasets
 
 from ic_benchmark_suite.baseline import Baseline
 from ic_benchmark_suite import idyom_corr
-from ic_benchmark_suite.benchmark_repetition_test import repetition_decrease
+from ic_benchmark_suite.benchmark_repetition_test import read_salami_annotations_hf, repetition_decrease
 from ic_benchmark_suite.benchmark_segment_boundary import segment_boundary_alignment
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
@@ -40,6 +40,13 @@ class BenchmarkSuite:
             num_proc=num_proc,
         )
         self.dataset_provider.persist_ds(session_idyom_ds, ds_name=ds_name, hub_upload=hub_upload)
+    def create_salami_ds(self, ds_name : str, salami_root: str, n_proc: int | None, hub_upload: bool = False):
+        salami_ds = read_salami_annotations_hf(
+            folder=salami_root,
+            cache_dir=self.dataset_provider.cache_dir,
+            keep_ids=True,
+            n_proc=n_proc)
+        self.dataset_provider.persist_ds(salami_ds, ds_name=ds_name, hub_upload=hub_upload)
     def baseline(self, model: Baseline, audio_ds : str | datasets.Dataset , cache_name : str, val: str = 'ic', hub_upload: bool = False):
         if isinstance(audio_ds, str):
             audio_ds = self.dataset_provider.get_ds(audio_ds)
@@ -68,7 +75,7 @@ class BenchmarkSuite:
             )
             print(results)
         elif task == 'repetition':
-            model_outputs = model_outputs.remove_columns(['Time'])
+            model_outputs = model_outputs.remove_columns(['Time']) # TODO: remove
             results = repetition_decrease(
                 model_outputs=model_outputs,
                 metadata_ds=task_ds,
@@ -81,6 +88,45 @@ class BenchmarkSuite:
                 task_ds,
             **task_kwargs)
             print(results)
+    def benchmark_all(self, metric: str, cache_model_segment : str, ds_segment: str, cache_model_idyom: str, ds_idyom: str, periode_frames: float, time_offset_frame: int) :
+        model_outputs_segment = self.dataset_provider.get_ds(cache_model_segment)
+        model_outputs_segment = model_outputs_segment.remove_columns(['Time']) # TODO: remove
+        task_ds_segment = self.dataset_provider.get_ds(ds_segment)
+        results = [
+            segment_boundary_alignment(
+                model_outputs_segment,
+                task_ds_segment,
+                periode_frames=periode_frames,
+                time_offset_frame=time_offset_frame,
+                segment_inclusion=segment_inclusion,
+                labels = ['lowercase', 'uppercase', 'functions']
+            ) for segment_inclusion in ['all', 'only_first_occurence', 'change']
+        ]
+        results.append(
+            repetition_decrease(
+                model_outputs = model_outputs_segment,
+                metadata_ds = task_ds_segment,
+                periode_frames = periode_frames,
+                time_offset_frame = time_offset_frame,
+                normalize = True
+            )
+        )
+
+        model_outputs_idyom = self.dataset_provider.get_ds(cache_model_idyom)
+        # model_outputs_idyom = model_outputs_idyom.remove_columns(['Time']) # TODO: remove
+        task_ds_idyom = self.dataset_provider.get_ds(ds_idyom)
+
+        task_ds_idyom = task_ds_idyom.select_columns(['id', 'onset', f'idyom_{metric}']).rename_column(f'idyom_{metric}', 'idyom_val')
+        results.append(
+            idyom_corr(
+                val_dataset = model_outputs_idyom,
+                idyom_ds = task_ds_idyom,
+                periode_frames = periode_frames,
+                combine_inst = True,
+                remove_outliers = False,
+            )
+        )
+        # TODO: streamline returns
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
     CLI(BenchmarkSuite, as_positional=True, default_config_files=[str(config_path)])

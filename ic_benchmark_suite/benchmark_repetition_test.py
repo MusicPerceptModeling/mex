@@ -54,7 +54,7 @@ def _salami_parsed_features() -> Features:
         }
     )
 
-def metadata_scheme(annotation_names: List[str]) -> Features:
+def _metadata_scheme(annotation_names: List[str]) -> Features:
     return Features(
         {
             "id": Value("int64"),
@@ -66,7 +66,7 @@ def metadata_scheme(annotation_names: List[str]) -> Features:
             }) for name in annotation_names},
         }
     )
-def model_output_scheme(labels: List[str]) -> Features:
+def _model_output_scheme(labels: List[str]) -> Features:
     return Features(
         {
             "id": Value("int64"),
@@ -74,62 +74,14 @@ def model_output_scheme(labels: List[str]) -> Features:
         }
     )
 
-def read_salami_annotations_hf(
-    folder: Path,
-    cache_dir: str | None = None,
-    keep_ids: set[int] | None = None,
-    n_proc = None
-) -> Dataset:
-    """Read SALAMI annotations as a cached HF Dataset using parallel per-file parsing."""
-    pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile[^_/]+_(functions|uppercase|lowercase)\.txt$")
-
-    def iter_paths(folder: Path, keep_ids: set[int] | None):
-        for p in (folder / "salami-data-public" / "annotations").rglob("textfile*_*.txt"):
-            path_str = str(p)
-            if keep_ids is not None:
-                match = pattern.match(path_str)
-                if match is None or int(match.group("id")) not in keep_ids:
-                    continue
-            yield {"path": path_str}
-
-    files_ds = Dataset.from_generator(
-        iter_paths,
-        gen_kwargs={"folder": folder, "keep_ids": keep_ids},
-        cache_dir=cache_dir,
-    ).sort("path")
-    cache_file_name = None
-    if cache_dir is not None:
-        cache_root = Path(cache_dir)
-        cache_root.mkdir(parents=True, exist_ok=True)
-        cache_file_name = str(cache_root / "salami_annotations_parsed.arrow")
-
-    parsed = files_ds.map(
-        _parse_salami_annotation_file,
-        num_proc=n_proc,
-        load_from_cache_file=True,
-        cache_file_name=cache_file_name,
-        features=_salami_parsed_features(),
-        input_columns=["path"],
-        remove_columns=["path"],
-    )
-
-    by_id: Dict[int, dict] = {}
-    for ex in parsed:
-        id_bucket = by_id.setdefault(int(ex["id"]), {"id": int(ex["id"])})
-        segment_bucket = id_bucket.setdefault(str(ex["level"]), [])
-        segment_bucket.append(ex["segment"])
-
-    rows = [by_id[id_] for id_ in sorted(by_id)]
-    return Dataset.from_list(rows, features=metadata_scheme(["functions", "lowercase", "uppercase"]))
-
-def merge_val_with_metadata(nll_dataset, salami_metadata_df):
+def _merge_val_with_metadata(nll_dataset, salami_metadata_df):
     """Join nll rows with SALAMI metadata on id and return row dictionaries."""
     nll_df = nll_dataset.to_pandas()
     merged = nll_df.merge(salami_metadata_df, on="id", how="inner")
     return merged
 
 
-def extract_segment_df_from_nll_dataset(
+def _extract_segment_df_from_nll_dataset(
     nll_dataset,
     segment_names: List[str],
     period_frames: float,
@@ -337,23 +289,71 @@ def _load_nll_csvs_as_rows(csv_paths) -> list:
     return rows
 
 
+def read_salami_annotations_hf(
+    folder: Path,
+    cache_dir: str | None = None,
+    keep_ids: set[int] | None = None,
+    n_proc = None
+) -> Dataset:
+    """Read SALAMI annotations as a cached HF Dataset using parallel per-file parsing."""
+    pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile[^_/]+_(functions|uppercase|lowercase)\.txt$")
+
+    def iter_paths(folder: Path, keep_ids: set[int] | None):
+        for p in (folder / "salami-data-public" / "annotations").rglob("textfile*_*.txt"):
+            path_str = str(p)
+            if keep_ids is not None:
+                match = pattern.match(path_str)
+                if match is None or int(match.group("id")) not in keep_ids:
+                    continue
+            yield {"path": path_str}
+
+    files_ds = Dataset.from_generator(
+        iter_paths,
+        gen_kwargs={"folder": folder, "keep_ids": keep_ids},
+        cache_dir=cache_dir,
+    ).sort("path")
+    cache_file_name = None
+    if cache_dir is not None:
+        cache_root = Path(cache_dir)
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_file_name = str(cache_root / "salami_annotations_parsed.arrow")
+
+    parsed = files_ds.map(
+        _parse_salami_annotation_file,
+        num_proc=n_proc,
+        load_from_cache_file=True,
+        cache_file_name=cache_file_name,
+        features=_salami_parsed_features(),
+        input_columns=["path"],
+        remove_columns=["path"],
+    )
+
+    by_id: Dict[int, dict] = {}
+    for ex in parsed:
+        id_bucket = by_id.setdefault(int(ex["id"]), {"id": int(ex["id"])})
+        segment_bucket = id_bucket.setdefault(str(ex["level"]), [])
+        segment_bucket.append(ex["segment"])
+
+    rows = [by_id[id_] for id_ in sorted(by_id)]
+    return Dataset.from_list(rows, features=_metadata_scheme(["functions", "lowercase", "uppercase"]))
+
 
 def repetition_decrease(
     model_outputs : Dataset,
     metadata_ds: Dataset,
     periode_frames : float,
     time_offset_frame : int = 0,
-    normalize: bool = False,
+    normalize: bool = True,
 ):
     labels = [col for col in model_outputs.column_names if col != "id"]
     annotation_names = [col for col in metadata_ds.column_names if col != "id"]
     try:
-        scheme = model_output_scheme(labels)
+        scheme = _model_output_scheme(labels)
         model_outputs = model_outputs.cast(scheme)
     except Exception:
         raise ValueError(f"Error occurred while casting model_outputs. Expected Dataset scheme:\n{scheme}.\nActual scheme:\n{model_outputs.features}")
     try:
-        scheme = metadata_scheme(annotation_names)
+        scheme = _metadata_scheme(annotation_names)
         metadata_ds = metadata_ds.cast(scheme)
     except Exception:
         raise ValueError(f"Error occurred while casting metadata_ds. Expected Dataset scheme:\n{scheme}.\nActual scheme:\n{metadata_ds.features}")
@@ -374,11 +374,11 @@ def repetition_decrease(
         o = model_outputs.map(lambda *vals: {'sqsums': np.nansum((vals - mean[:, None])**2, axis=-1)}, input_columns=labels, remove_columns=model_outputs.column_names)
         std = np.sqrt(np.sum(o['sqsums'], axis=0) / counts)
         model_outputs = model_outputs.map(lambda *vals: {label: val for label, val in zip(labels, (vals - mean[:, None]) / std[:, None])}, remove_columns=labels, input_columns=labels)
-    merged = merge_val_with_metadata(model_outputs, metadata_df)
+    merged = _merge_val_with_metadata(model_outputs, metadata_df)
     merged_rows = merged.to_dict(orient="records")
     segment_frames = []
     for label in labels:
-        seg_df = extract_segment_df_from_nll_dataset(
+        seg_df = _extract_segment_df_from_nll_dataset(
             nll_dataset=merged_rows,
             segment_names=annotation_names,
             period_frames=periode_frames,
@@ -393,12 +393,14 @@ def repetition_decrease(
 
 if __name__ == "__main__":
     # labels = ["IC"]
-    nll_csv_dir = Path('/home/mathias/devel/python3/audioic/salami')
-    labels = ["IC_0.0", "IC_0.3", "IC_0.5"]
-    nll_csv_dir = Path('/home/mathias/devel/python3/pa-audioic/salami')
+    # name = "salami_pa-audioic_ic-0.0-0.3-0.5"  
+    # folder = Path(f'/home/mathias/devel/python3/audioic/')
+    nll_csv_dir = Path(f'/home/mathias/devel/python3/audioic/salami-entr-mc32')
     csv_paths = sorted(nll_csv_dir.glob('*.csv'), key=_salami_id_extractor)
     nll_dataset = Dataset.from_list(_load_nll_csvs_as_rows(csv_paths))
+    # nll_dataset.save_to_disk(f'cache/metrics/salami_audioic_entropy_mc32')
 
+    labels = ["IC_0.0", "IC_0.3", "IC_0.5"]
     n_proc = 8
     # segment_names = ["lowercase", "uppercase", "functions"]
     salami_root = "/opt/datasets/fs/salami"
