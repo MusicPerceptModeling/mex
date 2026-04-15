@@ -10,12 +10,15 @@ from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackkni
 
 from eeg_utils.utils.fastcorr import *
 
-#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation , and the Bach dataset too
-#TO DO : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw
-#TO DO : check if the envelope is itself significant to predict EEG, maybe think of other features to check 
+#NOTES MEETING 09/04
+#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation, and the Bach dataset too
+#TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
+#TO DO : downsample the EEG to 32Hz, Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
+#TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
+#TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check 
 #NB: Giorgia didn't use banded_regularization
-
 #TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
+#TO DO : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
 
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
@@ -63,7 +66,7 @@ def compare_direct_models(stimuli_list, eeg_list, fs):
     return z_full, z_base, delta_z, opt_lambda_full
 
 
-def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):
+def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):#actually linear shifting would be even better but costs us in terms of data quantity
     """
     Method 2: Full model vs. a Null distribution created via circular shifting.
 
@@ -146,7 +149,7 @@ def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full,
 
     trf = TRF(direction=1)
     
-    # Evaluate True Model (using the banded lambdas you already found)
+    # evaluating true model using the banded lambdas
     print("Fitting True Model for Permutation Testing...")
     r_full = crossval(
         trf, stimuli_list, eeg_list, fs, tmin, tmax, 
@@ -157,20 +160,20 @@ def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full,
         r_full = np.mean(r_full, axis=0)
     z_full = fisher_z_transform(r_full)
 
-    # Generate Null Distribution via Mismatching
+    # null distribution via mismatching
     print(f"Generating Null Distribution with {n_perms} Mismatched Permutations...")
     z_null_permutations = np.zeros((n_perms, n_channels))
 
     for p in range(n_perms):
-        # Create a shuffled index list ensuring no epoch matches its original index (Derangement)
+        # creating a shuffled index list ensuring no epoch matches its original index (Derangement)
         shuffled_indices = np.arange(n_epochs)
         while np.any(shuffled_indices == np.arange(n_epochs)):
             np.random.shuffle(shuffled_indices)
             
-        # Reorder the stimuli list based on the mismatched indices
+        # reordering the stimuli list based on the mismatched indices
         mismatched_stimuli = [stimuli_list[i] for i in shuffled_indices]
 
-        # Fit the model on the completely mismatched data
+        # fitting the model on the completely mismatched data
         r_null = crossval(
             trf, mismatched_stimuli, eeg_list, fs, tmin, tmax, 
             regularization=opt_lambda_full, bands=[1, 1], method='banded', 
@@ -182,11 +185,11 @@ def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full,
             
         z_null_permutations[p, :] = fisher_z_transform(r_null)
 
-    # Calculate Statistics
+    # calculating statistics
     z_null_mean = np.mean(z_null_permutations, axis=0)
     delta_z_null = z_full - z_null_mean
 
-    # Empirical p-value: What % of random mismatches accidentally beat the true model?
+    # empirical p-value: what % of random mismatches accidentally beat the true model?
     p_values = np.sum(z_null_permutations >= z_full, axis=0) / n_perms
 
     return z_full, z_null_mean, delta_z_null, p_values
@@ -216,7 +219,9 @@ if __name__ == "__main__":
     print(f"Mean Enhancement over Null: {delta_z_null.mean():.4f}")
     print(f"Number of channels with p < 0.05: {np.sum(p_vals < 0.05)} / 64")
 """
-
+##########################################################################################################################################
+#Plotting topomap functions
+##########################################################################################################################################
 import os
 import glob
 import numpy as np
@@ -257,9 +262,9 @@ def plot_static_score_topomap(
     # We use a dummy sampling rate (1000) because it is irrelevant for static spatial plots
     info = mne.create_info(ch_names=ch_names, sfreq=1000, ch_types='eeg')
     
-    # apply standard 10-20 scalp montage TO DO : get the montage from the data itself !
+    # apply standard 10-05 scalp montage TO DO : get the montage from the data itself !
     try:
-        montage = mne.channels.make_standard_montage('standard_1020')
+        montage = mne.channels.make_standard_montage('standard_1005')
         info.set_montage(montage, match_case=False, on_missing='warn')
     except ValueError as e:
         print(f"Warning: Montage mapping issue. {e}")
@@ -272,14 +277,14 @@ def plot_static_score_topomap(
         info, 
         axes=ax, 
         cmap=cmap,
-        vlim=(vmin, vmax), # Locks the color scale if provided
+        vlim=(vmin, vmax), 
         show=False,
-        extrapolate='head' # Prevents bleeding outside the head circle
+        extrapolate='head' #prevents bleeding outside the head circle
     )
     
     ax.set_title(f"Spatial Distribution of Model Accuracy\nParticipant: {subj_id}")
     
-    # Add a colorbar to interpret the values
+    #colorbar to interpret the values
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label(score_type)
     
@@ -296,28 +301,35 @@ def plot_participant_trf_topomaps(
     subj_id: str, 
     feature_idx: int = 1, 
     feature_name: str = "IC",
-    times_to_plot: list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    times_to_plot: list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
 ):
-    # Extract weights and transpose for MNE
+    # extracting weights and transpose for MNE
     weights = trf_model.weights[feature_idx, :, :]
     weights_mne = weights.T 
     
-    # Create MNE Info and montage
+    # creating MNE Info and montage
     info = mne.create_info(ch_names=ch_names, sfreq=fs, ch_types='eeg')
     try:
-        montage = mne.channels.make_standard_montage('standard_1020')
-        info.set_montage(montage, match_case=False, on_missing='warn')
+        montage = mne.channels.make_standard_montage('standard_1005')
+        info.set_montage(montage, match_case=False, on_missing='ignore')
     except ValueError:
         pass
 
     evoked = mne.EvokedArray(weights_mne, info, tmin=tmin)
+    
+    # calculating a robust maximum limit using the 95th percentile.
+    # this prevents the extreme spike at 0.000s from washing out the other maps.
+    robust_vmax = np.percentile(np.abs(weights_mne), 95)
     
     fig = evoked.plot_topomap(
         times=times_to_plot,
         ch_type='eeg',
         time_unit='s',
         colorbar=True,
-        show=False 
+        show=False,
+        scalings=dict(eeg=1),             # Stop MNE from multiplying by 1,000,000
+        units=dict(eeg='TRF Weight'),     # Renaming the colorbar label
+        vlim=(-robust_vmax, robust_vmax)  
     )
     
     fig.suptitle(f"TRF Spatial Weights over Time\nParticipant: {subj_id} | Predictor: {feature_name}", fontsize=14)
@@ -340,7 +352,7 @@ def plot_group_level_topomap(
 
     info = mne.create_info(ch_names=ch_names, sfreq=1000, ch_types='eeg')
     try:
-        montage = mne.channels.make_standard_montage('standard_1020')
+        montage = mne.channels.make_standard_montage('standard_1005')
         info.set_montage(montage, match_case=False, on_missing='ignore') # Set to ignore to stop spam
     except ValueError:
         pass
@@ -371,6 +383,206 @@ def plot_group_level_topomap(
 
 
 #######################################################################################################################
+#Preprocessing and eeg preparation and alignment
+#######################################################################################################################
+#quality evaluation :
+
+def plot_ica_diagnostics(raw_before, ica, subj_id):
+    raw_eeg_only = raw_before.copy().pick(picks='eeg')
+    
+    diag_dir = f"results/diagnostics/{subj_id}"
+    os.makedirs(diag_dir, exist_ok=True)
+
+    # 1. Plot ICA Sources (Time courses)
+    fig_sources = ica.plot_sources(raw_eeg_only, show=False)
+    fig_sources.savefig(f"{diag_dir}/ica_sources.png")
+
+    # 2. Plot component properties (only for excluded ones)
+    if ica.exclude:
+        # passing the EEG-only object here
+        figs = ica.plot_properties(raw_eeg_only, picks=ica.exclude, show=False)
+        for i, fig in enumerate(figs):
+            fig.savefig(f"{diag_dir}/excluded_prop_{ica.exclude[i]}.png")
+            plt.close(fig)
+    
+    #ICA component plots (topomaps)
+    fig_topo = ica.plot_components(show=False)
+    fig_topo.savefig(f"{diag_dir}/ica_components.png")
+    
+    plt.close('all')
+
+
+#general preprocessing :
+import numpy as np
+import mne
+from mne.preprocessing import ICA
+from scipy.stats import zscore
+
+def apply_bandpass_filter(raw: mne.io.BaseRaw, l_freq: float = 1.0, h_freq: float = 8.0) -> mne.io.BaseRaw:
+    print(f"    -> Bandpass filtering ({l_freq} - {h_freq} Hz)...")
+    # strictly picking EEG only so we don't accidentally filter and destroy the 'music' trigger channel
+    picks = mne.pick_types(raw.info, eeg=True)
+    raw.filter(l_freq, h_freq, picks=picks, fir_design='firwin', phase='zero', verbose=False)
+    return raw
+"""
+def reject_bad_channels(raw: mne.io.BaseRaw, threshold_uv: float = 500.0) -> mne.io.BaseRaw:
+    print(f"    -> Checking for bad channels (amplitude > {threshold_uv} µV)...")
+    threshold_v = threshold_uv * 1e-6 
+    
+    picks = mne.pick_types(raw.info, eeg=True, exclude=[])
+    
+    #Ignore the first and last 2 seconds of the file where "filter ringing" causes fake spikes
+    sfreq = raw.info['sfreq']
+    trim_samples = int(2.0 * sfreq)
+    
+    #extracting the middle of the data to check amplitudes
+    if raw.n_times > 2 * trim_samples:
+        data = raw.get_data(picks=picks, start=trim_samples, stop=raw.n_times - trim_samples)
+    else:
+        data = raw.get_data(picks=picks)
+        
+    ptp_amps = np.ptp(data, axis=1)
+    
+    bad_idx = np.where(ptp_amps > threshold_v)[0]
+    bad_ch_names = [raw.ch_names[picks[i]] for i in bad_idx]
+    
+    if bad_ch_names:
+        if len(bad_ch_names) > len(picks) / 2:
+            print(f"    -> WARNING: {len(bad_ch_names)} channels exceed threshold! Skipping interpolation.")
+        else:
+            print(f"    -> Interpolating {len(bad_ch_names)} noisy channels: {bad_ch_names}")
+            raw.info['bads'].extend(bad_ch_names)
+            raw.interpolate_bads(reset_bads=True, verbose=False)
+    else:
+        print("    -> All channels within acceptable amplitude limits.")
+        
+    return raw
+"""
+def find_bad_channels_by_correlation(raw, corr_thresh=0.4): #!this is currently not in use! 
+    """
+    Identifies channels that don't correlate with their neighbors.
+    Useful for finding 'dead' or 'drifting' electrodes.
+    """
+    print("    -> Detecting bad channels via neighbor correlation...")
+    # get EEG data
+    picks = mne.pick_types(raw.info, eeg=True)
+    data = raw.get_data(picks=picks)
+    
+    # calculating correlation matrix
+    corr_matrix = np.corrcoef(data)
+    
+    # averaging correlation of each channel with all others
+    avg_corr = np.mean(corr_matrix, axis=1)
+    
+    bad_idx = np.where(avg_corr < corr_thresh)[0]
+    bad_ch_names = [raw.ch_names[picks[i]] for i in bad_idx]
+    
+    if bad_ch_names:
+        print(f"    -> Flagging poorly correlated channels: {bad_ch_names}")
+        raw.info['bads'].extend(bad_ch_names)
+    return raw
+
+def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp1') -> mne.io.BaseRaw: #!this is currently done in the clean_eeg_mne_objects!
+    """
+    Uses ICA to automatically find and subtract both eye blinks and heartbeat artifacts.
+    """
+    print("    -> Running ICA for artifact removal (Ocular & Cardiac)...")
+    
+    #Fit ICA
+    ica = ICA(n_components=15, random_state=42, max_iter='auto')
+    ica.fit(raw, verbose=False)
+
+    bads_to_exclude = []
+
+    # Removing ocular artifacts (blinks)
+    try:
+        eog_indices, eog_scores = ica.find_bads_eog(raw, ch_name=proxy_eog_ch, threshold=1.5, verbose=False)
+        if eog_indices:
+            bads_to_exclude.extend(eog_indices)
+            print(f"      - Subtracted {len(eog_indices)} blink component(s).")
+    except ValueError:
+        print(f"      - Warning: Channel '{proxy_eog_ch}' not found for blink detection.")
+
+    # Removing cardiac artifacts (heartbeats) by automatically searching for 'ecg' channel types in the raw object
+    if 'ecg' in raw.get_channel_types():
+        try:
+            #threshold='auto' relies on cross-trial phase tracking (CTPS), which is accurate for regular signals
+            ecg_indices, ecg_scores = ica.find_bads_ecg(raw, method='ctps', verbose=False)
+            if ecg_indices:
+                bads_to_exclude.extend(ecg_indices)
+                print(f"      - Subtracted {len(ecg_indices)} heartbeat component(s).")
+        except Exception as e:
+            print(f"      - Warning: Failed to detect cardiac components: {e}")
+    else:
+        print("      - No 'ecg' channel type found. Skipping heartbeat subtraction.")
+        
+    #removing duplicates just in case EOG and ECG flagged the same messy component
+    ica.exclude = list(set(bads_to_exclude)) 
+    ica.apply(raw, verbose=False)
+    
+    return raw
+
+def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently done in the main analysis loop!
+    """
+    Step 4: Z-scores the EEG data across time to remove trial-to-trial DC offsets 
+    and scale variance, preventing TRF bias.
+    """
+    print("    -> Z-scoring trial to remove baseline offsets...")
+    # axis=0 standardizes across the time dimension for each channel independently
+    return zscore(eeg_matrix, axis=0) 
+
+def clean_eeg_mne_object(raw, subj_id):
+    clean_raw = raw.copy()
+
+    #labelling technical channels as 'misc' or 'stim'
+    tech_ch_names = [
+        'ft_valance', 'ft_arousal', 'ft_x', 'ft_y', 'ft_ghostvalence', 
+        'ft_ghostarousal', 'trialtype', 'sams_valence', 
+        'sams_arousal', 'sams_valencert', 'sams_arousalrt', 
+        'nback_stimuli', 'nback_keypress'
+    ]
+    
+    #updating channel types
+    mapping = {ch: 'misc' for ch in tech_ch_names if ch in clean_raw.ch_names}
+    if 'music' in clean_raw.ch_names:
+        mapping['music'] = 'stim' # music is a trigger, 'stim' is safer
+    if 'ECG' in clean_raw.ch_names:
+        mapping['ECG'] = 'ecg'
+        
+    clean_raw.set_channel_types(mapping)
+
+    #montage and filtering
+    montage = mne.channels.make_standard_montage('standard_1005')
+    clean_raw.set_montage(montage, match_case=False, on_missing='ignore')
+    
+    clean_raw.filter(l_freq=1.0, h_freq=8.0, fir_design='firwin', verbose=False) #1Hz high-pass is standard for ICA stability
+
+    #ICA on EEG + ECG
+    picks_for_ica = mne.pick_types(clean_raw.info, eeg=True, ecg=True)
+    ica_raw = clean_raw.copy().pick(picks=picks_for_ica)
+    
+    ica = ICA(n_components=15, random_state=42, method='fastica')
+    ica.fit(ica_raw, verbose=False)
+
+    #Artifact detection
+    eog_idx, _ = ica.find_bads_eog(clean_raw, ch_name='Fp1', threshold=2.0)
+    
+    #For ECG, 'correlation' method
+    ecg_idx, _ = ica.find_bads_ecg(clean_raw, method='correlation', threshold=1.5)
+    
+    ica.exclude = list(set(eog_idx + ecg_idx))
+    print(f"    -> ICA: Ousting {len(ica.exclude)} components.")
+
+    #Diagnostic plots 
+    plot_ica_diagnostics(clean_raw, ica, subj_id)
+
+    ica.apply(clean_raw, verbose=False)
+    
+    return clean_raw
+
+############################################################################
+#specific to openneuro ds002725 :
+
 def decode_music_channel(voltage_value,feature_dir):
     """
     Decodes the voltage from the 'music' channel into the stimuli filename.
@@ -404,8 +616,8 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
     eeg_fs = raw.info['sfreq']
     print(eeg_fs)
     eeg_length = raw.n_times
-    #TO DO : downsample eeg to 64 Hz or even 30Hz
-    #band-pass filter, for instance between 1 and 30 Hz
+    #TO DO : downsample eeg to 64 Hz or even 32Hz
+    #band-pass filter, for instance between 1 and 30 Hz or even better between 1 and 8 Hz DONE in clean_mne_eeg_object
     
     # Extract only the 'music' channel
     music_data, times = raw.get_data(picks=['music'], return_times=True)
@@ -504,12 +716,13 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         raise ValueError(f"No BIDS sub-* folders found in {bids_root_dir}")
         
     all_delta_z = []
+    all_z_base = []
     channel_names = None
     eeg_fs = None 
     
-    # Standard 10-20 channels used for mapping
+    # 10-05 channels
     eeg_only_names = [
-        'FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
+        'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
         'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
         'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
     ]
@@ -538,31 +751,31 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 eeg_fs = raw.info['sfreq']
             
             try:
-                # Align stimuli
+                #calling the global preprocessing function
+                clean_raw = clean_eeg_mne_object(raw, subj_id)
+
+                #aligning stimuli using the clean MNE object
                 aligned_stim = choose_stimulus_and_align_to_eeg(
-                    raw=raw, 
+                    raw=clean_raw, 
                     env_dir=env_dir, 
                     ic_dir=ic_dir, 
                     env_dt=env_dt, 
                     ic_dt=ic_dt
                 )
-                
-                # Drop technical channels
-                technical_channels = ['music', 'trialtype', 'nback_stimuli', 'nback_keypress', 'POz']
-                channels_to_drop = [ch for ch in technical_channels if ch in raw.ch_names]
-                if channels_to_drop:
-                    raw.drop_channels(channels_to_drop)
 
-                picks = mne.pick_types(raw.info, eeg=True, misc=True, stim=True)
+                #picking only EEG channels for the TRF target
+                eeg_picks = mne.pick_types(clean_raw.info, eeg=True)
                 
                 if channel_names is None:
-                    channel_names = [raw.ch_names[i] for i in picks]
-                    
-                raw_eeg_trial = raw.get_data(picks=picks).T 
-                
-                # chunking and Z-Scoring
+                    channel_names = [clean_raw.ch_names[i] for i in eeg_picks]
+
+                #eliminating NaNs
+                #shape: (n_samples, n_eeg_channels)
+                raw_eeg_trial = clean_raw.get_data(picks=eeg_picks).T
+                raw_eeg_trial = np.nan_to_num(raw_eeg_trial, nan=0.0)
+
+                #chunking for "data augmentation" 
                 valid_indices = np.where(aligned_stim[:, 0] > 0)[0]
-                
                 if len(valid_indices) == 0:
                     continue
                     
@@ -572,17 +785,23 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 for block in valid_blocks:
                     if len(block) > (10 * eeg_fs):
                         chunk_size = int(30 * eeg_fs) 
-                        
                         for i in range(0, len(block), chunk_size):
                             chunk_idx = block[i : i + chunk_size]
-                            
+
                             if len(chunk_idx) > (15 * eeg_fs):
-                                with np.errstate(divide='ignore', invalid='ignore'):
-                                    chunk_stim = np.nan_to_num(zscore(aligned_stim[chunk_idx, :], axis=0))
-                                    chunk_eeg = np.nan_to_num(zscore(raw_eeg_trial[chunk_idx, :], axis=0))
+                                # Extract chunks
+                                raw_chunk_stim = aligned_stim[chunk_idx, :]
+                                raw_chunk_eeg = raw_eeg_trial[chunk_idx, :]
                                 
-                                stimuli_list.append(chunk_stim)
-                                eeg_list.append(chunk_eeg)
+                                # Verify variance ONLY on EEG and Stim features
+                                if np.any(np.std(raw_chunk_stim, axis=0) == 0):
+                                    continue
+                                if np.any(np.std(raw_chunk_eeg, axis=0) == 0):
+                                    continue
+                                
+                                # Standardize and store
+                                stimuli_list.append(zscore(raw_chunk_stim, axis=0))
+                                eeg_list.append(zscore(raw_chunk_eeg, axis=0))
                                 
             except ValueError as e:
                 print(f"  [!] {e} Skipping EDF.")
@@ -599,10 +818,12 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
             
             delta_z = np.nan_to_num(delta_z, nan=0.0)
+            z_base = np.nan_to_num(z_base, nan=0.0)
             all_delta_z.append(delta_z)
+            all_z_base.append(z_base)
             print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
 
-            # plotting
+            #plotting topomap according to the value of predictive enhancement obtained from IC in each channel
             eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
             valid_eeg_names = [channel_names[i] for i in eeg_indices]
             scalp_scores = delta_z[eeg_indices]
@@ -620,7 +841,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             fig.savefig(f"results/topomap_{subj_id}_delta_z.png", dpi=300)
             plt.close(fig) 
 
-            """# Fit Final Full Model with Banded Constraints
+            """# Fit final full model with banded constraints
             print(f"  -> Fitting final Full Model to extract weights...")
             all_stimuli_concat = np.vstack(stimuli_list)
             all_eeg_concat = np.vstack(eeg_list)
@@ -639,8 +860,8 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 method='banded'                 
             )"""
             
-            # Fit final full model 
-            print(f"  -> Fitting final full model to extract weights...")
+            #fitting one final full model for each subject on all trials to get the weights for each lag 
+            print(f"  -> Fitting final full model to extract weights")
             all_stimuli_concat = np.vstack(stimuli_list)
             all_eeg_concat = np.vstack(eeg_list)
 
@@ -666,7 +887,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 subj_id=subj_id,
                 feature_idx=1,
                 feature_name="Information Content (IC)",
-                times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5] 
+                times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] 
             )
             fig.savefig(f"results/topomap_{subj_id}_IC_weights.png", dpi=300)
             plt.close(fig)
@@ -684,32 +905,68 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
     print("\n==========================================")
     print(" Computing Group-Level Statistics...")
     print("==========================================")
-    
-    group_delta_z = np.stack(all_delta_z, axis=0) 
-    
+
     eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
     valid_eeg_names = [channel_names[i] for i in eeg_indices]
     
-    # Shape becomes (18 subjects, 30 channels)
+    #baseline predictions z-transformed pearson correlation coefficients 
+    group_z_base = np.stack(all_z_base, axis=0) 
+    
+    #subset to the 30 scalp electrodes
+    eeg_group_z_base = group_z_base[:, eeg_indices]
+    
+    mean_z_base = np.mean(eeg_group_z_base, axis=0)
+    std_z_base = np.std(eeg_group_z_base, axis=0)
+    
+    #non-parametric Jackknife testing on the 30 scalp electrodes
+    p_values_base = []
+    for ch in range(eeg_group_z_base.shape[1]):
+        try:
+            _, p = jackknife_ttest(eeg_group_z_base[:, ch], alternative='greater')
+        except Exception:
+            #fallback to standard Wilcoxon if jackknife fails
+            res = wilcoxon(eeg_group_z_base[:, ch], alternative='greater') 
+            p = res.pvalue
+        p_values_base.append(p)
+        
+    p_values_base = np.array(p_values_base)
+    
+    #FDR correction to the 30 valid p-values
+    reject_null_base, p_values_fdr_base = mne.stats.fdr_correction(p_values_base, alpha=0.05, method='indep')
+    significant_channels_base = np.where(reject_null_base)[0]
+    
+    print(f"Overall Mean Scalp Envelope Prediction (z_base): {np.mean(mean_z_base):.4f}")
+    print(f"Number of channels with significant envelope prediction: {len(significant_channels_base)} / {len(valid_eeg_names)}")
+    
+    if len(significant_channels_base) > 0:
+        print("\nSignificant Envelope Channels (FDR Corrected):")
+        for ch_idx in significant_channels_base:
+            print(f" - {valid_eeg_names[ch_idx]}: z_base = {mean_z_base[ch_idx]:.4f} (p = {p_values_fdr_base[ch_idx]:.4f})")
+
+            
+    #predicitve enhancement obtained from IC on each channel for all pariticpants
+    group_delta_z = np.stack(all_delta_z, axis=0) 
+    
+    #shape becomes (18 subjects, 30 channels)
     eeg_group_delta_z = group_delta_z[:, eeg_indices]
     
     mean_delta_z = np.mean(eeg_group_delta_z, axis=0)
     std_delta_z = np.std(eeg_group_delta_z, axis=0)
     
-    #Run the Non-Parametric Jackknife testing on the 30 scalp electrodes
+    #non-parametric Jackknife testing on the 30 scalp electrodes
     p_values = []
     for ch in range(eeg_group_delta_z.shape[1]):
         try:
             _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
         except Exception:
-            # Fallback to standard Wilcoxon if jackknife fails
-            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') #NB: a simple t test is also an option but only if the normality condition is verified
+            #Fallback to standard Wilcoxon if jackknife fails
+            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') #NB: a simple t test could also work but only if the normality condition is verified
             p = res.pvalue
         p_values.append(p)
         
     p_values = np.array(p_values)
     
-    # FDR correction to the 30 valid p-values
+    #FDR correction to the 30 valid p-values
     reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
     significant_channels = np.where(reject_null)[0]
     
@@ -722,7 +979,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         for ch_idx in significant_channels:
             print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
 
-    # Re-map the outputs back to the original dictionary format so the __main__ block doesn't break
+
     return {
         "mean_delta_z": mean_delta_z,
         "std_delta_z": std_delta_z,
