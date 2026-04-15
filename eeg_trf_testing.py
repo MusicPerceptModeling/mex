@@ -10,7 +10,7 @@ from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackkni
 
 from eeg_utils.utils.fastcorr import *
 
-#NOTES MEETING 09/04
+#NOTES MEETING 10/04
 #TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation, and the Bach dataset too
 #TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
 #TO DO : downsample the EEG to 32Hz, Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
@@ -30,7 +30,7 @@ def compare_direct_models(stimuli_list, eeg_list, fs):
     Method 1: Comparison between baseline (energy only) and full (energy + IC) 
     using the official mTRFpy Ridge Regression.
     """
-    tmin, tmax = -0.1, 0.7 
+    tmin, tmax = -0.1, 1.0 #0.7 to do like in the paper
     k_folds = -1  # Leave-One-Out CV
     regularization = np.logspace(-1, 4, 6)
     trf = TRF(direction=1)
@@ -677,7 +677,7 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
         
         # Interpolate IC 
         ic_interpolator = interp1d(
-            ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0
+            ic_time, ic_data, kind='previous', bounds_error=False, fill_value=0.0
         ) #TO DO : what is best here between linear and previous?
         ic_aligned = ic_interpolator(eeg_time)
         
@@ -990,22 +990,321 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
     }
 
 
-if  __name__ == "__main__":
-    
-    bids_path = "ds002725"
+#################################################################################################################################################################
+#Song dataset treatment
+import scipy.io as sio
+import pandas as pd
 
-    results = run_group_level_analysis(bids_path, "enveloppe_of_stimuli", "ic_curves_global_stimuli")
+import numpy as np
+import pandas as pd
+from scipy.interpolate import interp1d
+from scipy.stats import zscore
+
+def prepare_song_trial(eeg_matrix, env_path, ic_csv_path, eeg_fs, env_dt=0.015625, ic_dt=None):
+    """
+    Takes the pre-cut EEG matrix, loads the standalone Envelope (.npy) and IC (.csv), 
+    and perfectly aligns everything to the EEG sampling rate.
+    """
+    # Information Content from the CSV properly
+    ic_df = pd.read_csv(ic_csv_path)
+    ic_time = ic_df['time'].values
     
-    fig = plot_group_level_topomap(
-        mean_scores=results["mean_delta_z"],
-        ch_names=results["channel_names"],
-        significant_mask=results["significant_mask"],
-        score_type="Mean Δz",
-        cmap="Reds",
-        vmin=0.0
+
+    # We use .fillna(0.0) to turn the empty spaces between notes into zeros.
+    # for testing Entropy instead, just need to change 'nll_0.000' to 'entr_0.000'
+    ic_data = ic_df['nll_0.000'].fillna(0.0).values
+    
+    #acoustic envelope
+    env_data = np.squeeze(np.load(env_path))
+    #time vectors
+    eeg_length = eeg_matrix.shape[0]
+    eeg_time = np.arange(eeg_length) / eeg_fs
+    
+    env_time = np.arange(len(env_data)) * env_dt
+    
+    #Interpolate IC using the CSV's explicit time vector
+    ic_interpolator = interp1d(ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0)
+    ic_aligned = ic_interpolator(eeg_time)
+    
+    #Interpolate Envelope
+    env_interpolator = interp1d(env_time, env_data, kind='linear', bounds_error=False, fill_value=0.0)
+    env_aligned = env_interpolator(eeg_time)
+    
+    #Combine Acoustic Envelope and IC into one Stimulus Matrix
+    aligned_stim = np.column_stack((env_aligned, ic_aligned))
+    
+    #Z-score both the Stimulus and the EEG to remove baseline biases
+    clean_stim = np.nan_to_num(zscore(aligned_stim, axis=0))
+    clean_eeg = np.nan_to_num(zscore(eeg_matrix, axis=0))
+    
+    return clean_stim, clean_eeg
+
+def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.004, ic_dt=0.5):
+    
+    mat_files = sorted(glob.glob(os.path.join(mat_dir, "pre_dataSub*.mat")))
+    csv_files = sorted(glob.glob(os.path.join(csv_dir, "ic_*_song.csv")))
+    
+    all_delta_z = []
+    all_z_base = []
+    
+    channel_names = None
+
+    eeg_only_names = [
+        'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
+        'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
+        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
+    ]
+    
+    for mat_file in mat_files:
+        subj_id = os.path.basename(mat_file).split('.')[0]
+        print(f"\n=============================")
+        print(f" Processing {subj_id}...")
+        
+        # 1. Load the preprocessed subject data
+        mat_data = sio.loadmat(mat_file)
+        eeg_struct = mat_data['eeg'][0, 0]
+        
+        trial_fs = int(eeg_struct['fs'].item())
+        if eeg_fs is None:
+            eeg_fs = trial_fs
+            
+        eeg_trials = eeg_struct['data'][0]
+        
+        # extracting channel names from the MATLAB struct on the first pass!
+        if channel_names is None:
+            # chanlocs is usually a structured array where 'labels' holds the name
+            chanlocs = eeg_struct['chanlocs'][0]
+            channel_names = [ch['labels'][0] for ch in chanlocs]
+            print(f"    -> Extracted {len(channel_names)} channels from MAT file.")
+        
+        eeg_list = []
+        stimuli_list = []
+        
+        # TO DO: generalise if needed - for now this strictly assumes eeg_trials[0] is ic_01_song, eeg_trials[1] is ic_02_song, etc.
+        for trial_idx in range(len(csv_files)):
+            
+            # Extract the raw EEG array from the MATLAB cell
+            trial_eeg = eeg_trials[trial_idx] 
+            
+            # Safely catch and skip empty MATLAB arrays (e.g., rejected trials)
+            if trial_eeg.size == 0 or max(trial_eeg.shape) < (eeg_fs * 2):
+                print(f"  [!] Warning: Trial {trial_idx} is empty or too short (< 2s). Skipping.")
+                continue
+                
+            # Squeeze out any hidden MATLAB cell dimensions
+            trial_eeg = np.squeeze(trial_eeg)
+            if len(trial_eeg.shape) < 2:
+                print(f"  [!] Warning: Trial {trial_idx} has invalid dimensions. Skipping.")
+                continue
+                
+            # Transpose to (time, channels) if necessary
+            if trial_eeg.shape[0] < trial_eeg.shape[1]:
+                trial_eeg = trial_eeg.T
+                
+            current_csv_path = csv_files[trial_idx]
+            
+            # --- THE FILE MATCHING MAGIC ---
+            csv_filename = os.path.basename(current_csv_path)
+            env_filename = csv_filename.replace('ic_', '').replace('.csv', '.npy')
+            env_path = os.path.join(env_dir, env_filename)
+            
+            if not os.path.exists(env_path):
+                print(f"  [!] Warning: Envelope {env_filename} not found. Skipping trial.")
+                continue
+            # --------------------------------
+            
+            # Prepare and align
+            clean_stim, clean_eeg = prepare_song_trial(
+                eeg_matrix=trial_eeg, 
+                env_path=env_path, 
+                ic_csv_path=current_csv_path, 
+                eeg_fs=eeg_fs, 
+                env_dt=env_dt,
+                ic_dt=ic_dt 
+            )
+            
+            stimuli_list.append(clean_stim)
+            eeg_list.append(clean_eeg)
+            
+        if not stimuli_list:
+            continue
+            
+        # TRF Cross-Validation
+        print(f"  -> Fitting direct models for {subj_id} on {len(stimuli_list)} epochs...")
+        z_full, z_base, delta_z, opt_lam = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
+        
+        delta_z = np.nan_to_num(delta_z, nan=0.0)
+        z_base = np.nan_to_num(z_base, nan=0.0) # Ensure z_base is also cleaned
+        
+        all_delta_z.append(delta_z)
+        all_z_base.append(z_base) # Ensure we track this for the group stats
+        print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
+        
+        
+    # ====================================================================
+    # Group-Level Statistics 
+
+    print("\n==========================================")
+    print(" Computing Group-Level Statistics...")
+    print("==========================================")
+
+    eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
+    valid_eeg_names = [channel_names[i] for i in eeg_indices]
+    
+    #baseline predictions z-transformed pearson correlation coefficients 
+    group_z_base = np.stack(all_z_base, axis=0) 
+    
+    #subset to the 30 scalp electrodes
+    eeg_group_z_base = group_z_base[:, eeg_indices]
+    
+    mean_z_base = np.mean(eeg_group_z_base, axis=0)
+    std_z_base = np.std(eeg_group_z_base, axis=0)
+    
+    #non-parametric Jackknife testing on the 30 scalp electrodes
+    p_values_base = []
+    for ch in range(eeg_group_z_base.shape[1]):
+        try:
+            _, p = jackknife_ttest(eeg_group_z_base[:, ch], alternative='greater')
+        except Exception:
+            #fallback to standard Wilcoxon if jackknife fails
+            res = wilcoxon(eeg_group_z_base[:, ch], alternative='greater') 
+            p = res.pvalue
+        p_values_base.append(p)
+        
+    p_values_base = np.array(p_values_base)
+    
+    #FDR correction to the 30 valid p-values
+    reject_null_base, p_values_fdr_base = mne.stats.fdr_correction(p_values_base, alpha=0.05, method='indep')
+    significant_channels_base = np.where(reject_null_base)[0]
+    
+    print(f"Overall Mean Scalp Envelope Prediction (z_base): {np.mean(mean_z_base):.4f}")
+    print(f"Number of channels with significant envelope prediction: {len(significant_channels_base)} / {len(valid_eeg_names)}")
+    
+    if len(significant_channels_base) > 0:
+        print("\nSignificant Envelope Channels (FDR Corrected):")
+        for ch_idx in significant_channels_base:
+            print(f" - {valid_eeg_names[ch_idx]}: z_base = {mean_z_base[ch_idx]:.4f} (p = {p_values_fdr_base[ch_idx]:.4f})")
+
+            
+    #predicitve enhancement obtained from IC on each channel for all pariticpants
+    group_delta_z = np.stack(all_delta_z, axis=0) 
+    
+    #shape becomes (18 subjects, 30 channels)
+    eeg_group_delta_z = group_delta_z[:, eeg_indices]
+    
+    mean_delta_z = np.mean(eeg_group_delta_z, axis=0)
+    std_delta_z = np.std(eeg_group_delta_z, axis=0)
+
+    #non-parametric Jackknife testing on the 30 scalp electrodes
+    p_values = []
+    for ch in range(eeg_group_delta_z.shape[1]):
+        try:
+            _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
+        except Exception:
+            #Fallback to standard Wilcoxon if jackknife fails
+            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') #NB: a simple t test could also work but only if the normality condition is verified
+            p = res.pvalue
+        p_values.append(p)
+        
+    p_values = np.array(p_values)
+    
+    #FDR correction to the 30 valid p-values
+    reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
+    significant_channels = np.where(reject_null)[0]
+    
+    print(f"Total Subjects Processed: {eeg_group_delta_z.shape[0]}")
+    print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
+    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
+    
+    if len(significant_channels) > 0:
+        print("\nSignificant Channels (FDR Corrected):")
+        for ch_idx in significant_channels:
+            print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
+
+
+    return {
+        "mean_delta_z": mean_delta_z,
+        "std_delta_z": std_delta_z,
+        "p_values_raw": p_values,
+        "p_values_fdr": p_values_fdr,
+        "significant_mask": reject_null,
+        "channel_names": valid_eeg_names
+    }
+
+
+import argparse
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="Run EEG TRF Analysis on Music Datasets.")
+
+    parser.add_argument(
+        '--dataset', 
+        type=str, 
+        required=True, 
+        choices=['openneuro', 'song'],
+        help="Specify which dataset pipeline to run: 'openneuro' or 'song'"
     )
+
+    #path arguments (with defaults)
+    # OpenNeuro paths
+    parser.add_argument('--bids_dir', type=str, default="ds002725", help="Path to OpenNeuro BIDS directory")
+    parser.add_argument('--env_dir', type=str, default="enveloppe_of_stimuli", help="Path to envelope npy files of audio stimuli")
+    parser.add_argument('--ic_dir', type=str, default="ic_curves_global_stimuli", help="Path to IC npy files of audio stimuli")
     
+    # SONG dataset paths
+    parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
+    parser.add_argument('--csv_dir', type=str, default="../Giorgia_data/features/ic_neurips/aligned", help="Path to SONG .csv ic files")
+    parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
+
+    #parsing arguments from the terminal
+    args = parser.parse_args()
+
+    #creating results folder if it doesn't exist
     os.makedirs("results", exist_ok=True)
-    fig.savefig("results/group_level_enhancement.png", dpi=300)
-    print("Saved group-level topomap to results/group_level_enhancement.png")
+
+    # ==========================================
+    # BRANCH 1: OpenNeuro ds002725
+    # ==========================================
+    if args.dataset == 'openneuro':
+        print("\n=== Launching OpenNeuro Pipeline ===")
+        results = run_group_level_analysis(
+            bids_root_dir=args.bids_dir, 
+            env_dir=args.env_dir, 
+            ic_dir=args.ic_dir
+        )
+        
+        fig = plot_group_level_topomap(
+            mean_scores=results["mean_delta_z"],
+            ch_names=results["channel_names"],
+            significant_mask=results["significant_mask"],
+            score_type="Mean Δz",
+            cmap="Reds",
+            vmin=0.0
+        )
+        fig.savefig("results/group_level_enhancement_openneuro.png", dpi=300)
+        print("Saved OpenNeuro topomap to results/group_level_enhancement_openneuro.png")
+
+    # ==========================================
+    # BRANCH 2: SONG Dataset
+    # ==========================================
+    elif args.dataset == 'song':
+        print("\n=== Launching SONG Dataset Pipeline ===")
+        
+        results = run_song_dataset_analysis(
+            mat_dir=args.mat_dir, 
+            env_dir=args.npy_dir,
+            csv_dir=args.csv_dir,
+            eeg_fs=64 
+        )
+        
+        fig = plot_group_level_topomap(
+            mean_scores=results["mean_delta_z"],
+            ch_names=results["channel_names"],
+            significant_mask=results["significant_mask"],
+            score_type="Mean Δz",
+            cmap="Reds",
+            vmin=0.0
+        )
+        fig.savefig("results/group_level_enhancement_song.png", dpi=300)
+        print("Saved SONG topomap to results/group_level_enhancement_song.png")
     
