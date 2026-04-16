@@ -11,12 +11,13 @@ from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackkni
 from eeg_utils.utils.fastcorr import *
 
 #NOTES MEETING 10/04
-#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation, and the Bach dataset too
+#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation (IN PROGRESS), and the Bach dataset too 
 #TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
-#TO DO : downsample the EEG to 32Hz, Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
+#TO DO (DONE): downsample the EEG to 64 Hz (or 32Hz),
+#TO DO : Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
+#TO DO (DONE - it actually makes things worse!): SSP could be used to eliminate the stationary noise from the MRI machine (only the first component currently eliminated) 
+#TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check
 #TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
-#TO DO : downsampling and SSP could be used to eliminate the stationary noise from the MRI machine DONE (only the first component currently eliminated) 
-#TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check 
 #NB: Giorgia didn't use banded_regularization
 #TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
 #TO DO : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
@@ -1295,16 +1296,19 @@ if __name__ == "__main__":
         help="Specify which dataset pipeline to run: 'openneuro' or 'song'"
     )
 
-    #path arguments (with defaults)
     # OpenNeuro paths
     parser.add_argument('--bids_dir', type=str, default="ds002725", help="Path to OpenNeuro BIDS directory")
     parser.add_argument('--env_dir', type=str, default="enveloppe_of_stimuli", help="Path to envelope npy files of audio stimuli")
     parser.add_argument('--ic_dir', type=str, default="ic_curves_global_stimuli", help="Path to IC npy files of audio stimuli")
     
     # SONG dataset paths
-    parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
+    parser.add_argument('--mat_dir', type=str, default="song_data_mat", help="Path to SONG .mat files")
     parser.add_argument('--csv_dir', type=str, default="../Giorgia_data/features/ic_neurips/aligned", help="Path to SONG .csv ic files")
     parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
+    
+    #adding the time-step parameters to the parser
+    parser.add_argument('--env_dt', type=float, default=0.015625, help="Time step for the acoustic envelope (e.g., 1/64)")
+    parser.add_argument('--ic_dt', type=float, default=0.5, help="Time step for the Information Content")
 
     #parsing arguments from the terminal
     args = parser.parse_args()
@@ -1344,7 +1348,9 @@ if __name__ == "__main__":
             mat_dir=args.mat_dir, 
             env_dir=args.npy_dir,
             csv_dir=args.csv_dir,
-            eeg_fs=64 
+            eeg_fs=64,
+            env_dt=args.env_dt,  
+            ic_dt=args.ic_dt     
         )
         
         fig = plot_group_level_topomap(
@@ -1357,4 +1363,3 @@ if __name__ == "__main__":
         )
         fig.savefig("results/group_level_enhancement_song.png", dpi=300)
         print("Saved SONG topomap to results/group_level_enhancement_song.png")
-    
