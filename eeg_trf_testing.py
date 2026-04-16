@@ -15,6 +15,7 @@ from eeg_utils.utils.fastcorr import *
 #TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
 #TO DO : downsample the EEG to 32Hz, Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
 #TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
+#TO DO : downsampling and SSP could be used to eliminate the stationary noise from the MRI machine DONE (only the first component currently eliminated) 
 #TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check 
 #NB: Giorgia didn't use banded_regularization
 #TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
@@ -458,28 +459,42 @@ def reject_bad_channels(raw: mne.io.BaseRaw, threshold_uv: float = 500.0) -> mne
         
     return raw
 """
-def find_bad_channels_by_correlation(raw, corr_thresh=0.4): #!this is currently not in use! 
-    """
-    Identifies channels that don't correlate with their neighbors.
-    Useful for finding 'dead' or 'drifting' electrodes.
-    """
+def find_bad_channels_by_correlation(raw, corr_thresh=0.15): # Lowered to a realistic threshold
     print("    -> Detecting bad channels via neighbor correlation...")
-    # get EEG data
     picks = mne.pick_types(raw.info, eeg=True)
     data = raw.get_data(picks=picks)
     
-    # calculating correlation matrix
-    corr_matrix = np.corrcoef(data)
+    #catching flatlines (variance = 0)
+    stds = np.std(data, axis=1)
+    flatline_idx = np.where(stds == 0)[0]
     
-    # averaging correlation of each channel with all others
-    avg_corr = np.mean(corr_matrix, axis=1)
-    
-    bad_idx = np.where(avg_corr < corr_thresh)[0]
-    bad_ch_names = [raw.ch_names[picks[i]] for i in bad_idx]
-    
-    if bad_ch_names:
-        print(f"    -> Flagging poorly correlated channels: {bad_ch_names}")
-        raw.info['bads'].extend(bad_ch_names)
+    bads_to_mark = [raw.ch_names[picks[i]] for i in flatline_idx]
+    if bads_to_mark:
+        print(f"      - Found flatline channels: {bads_to_mark}")
+
+    #catching uncorrelated channels (drift / noise)
+    valid_idx = np.where(stds > 0)[0]
+    if len(valid_idx) > 1:
+        valid_data = data[valid_idx, :]
+        corr_matrix = np.corrcoef(valid_data)
+        avg_corr = np.mean(corr_matrix, axis=1)
+        
+        poor_corr_idx = np.where(avg_corr < corr_thresh)[0]
+        bads_to_mark.extend([raw.ch_names[picks[valid_idx[i]]] for i in poor_corr_idx])
+
+    #safety net
+    if bads_to_mark:
+        bads_to_mark = list(set(bads_to_mark))
+        # If it tries to reject more than 25% of the head, abort!
+        if len(bads_to_mark) > len(picks) * 0.25:
+            print(f"      - [!] WARNING: {len(bads_to_mark)} channels flagged! Aborting to prevent data loss.")
+            # Only safely reject the true flatlines
+            safe_bads = [raw.ch_names[picks[i]] for i in flatline_idx]
+            raw.info['bads'].extend(safe_bads)
+        else:
+            print(f"      - Flagging channels for interpolation: {bads_to_mark}")
+            raw.info['bads'].extend(bads_to_mark)
+            
     return raw
 
 def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp1') -> mne.io.BaseRaw: #!this is currently done in the clean_eeg_mne_objects!
@@ -488,13 +503,13 @@ def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp
     """
     print("    -> Running ICA for artifact removal (Ocular & Cardiac)...")
     
-    #Fit ICA
+    #fitting ICA
     ica = ICA(n_components=15, random_state=42, max_iter='auto')
     ica.fit(raw, verbose=False)
 
     bads_to_exclude = []
 
-    # Removing ocular artifacts (blinks)
+    #removing ocular artifacts (blinks)
     try:
         eog_indices, eog_scores = ica.find_bads_eog(raw, ch_name=proxy_eog_ch, threshold=1.5, verbose=False)
         if eog_indices:
@@ -503,7 +518,7 @@ def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp
     except ValueError:
         print(f"      - Warning: Channel '{proxy_eog_ch}' not found for blink detection.")
 
-    # Removing cardiac artifacts (heartbeats) by automatically searching for 'ecg' channel types in the raw object
+    #removing cardiac artifacts (heartbeats) by automatically searching for 'ecg' channel types in the raw object
     if 'ecg' in raw.get_channel_types():
         try:
             #threshold='auto' relies on cross-trial phase tracking (CTPS), which is accurate for regular signals
@@ -522,6 +537,27 @@ def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp
     
     return raw
 
+def remove_MRI_stationary_noise_with_SSP(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
+    """
+    Computes Signal Space Projection (SSP) to remove the highest-variance 
+    stationary background noise (often continuous MRI machine hum).
+    """
+    print("    -> Computing SSP to project out stationary MRI noise...")
+    
+    # Compute PCA-based projectors on continuous EEG data
+    # We restrict it to 1 projection vector so we don't accidentally delete brain waves
+    projs = mne.compute_proj_raw(raw, n_eeg=1, reject=None, verbose=False)
+    
+    if projs:
+        # Add the projector to the raw object and apply it
+        raw.add_proj(projs)
+        raw.apply_proj(verbose=False)
+        print("      - Projected out 1 spatial component.")
+    else:
+        print("      - No spatial projectors computed.")
+        
+    return raw
+
 def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently done in the main analysis loop!
     """
     Step 4: Z-scores the EEG data across time to remove trial-to-trial DC offsets 
@@ -534,7 +570,7 @@ def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently
 def clean_eeg_mne_object(raw, subj_id):
     clean_raw = raw.copy()
 
-    #labelling technical channels as 'misc' or 'stim'
+    #labelling technical channels
     tech_ch_names = [
         'ft_valance', 'ft_arousal', 'ft_x', 'ft_y', 'ft_ghostvalence', 
         'ft_ghostarousal', 'trialtype', 'sams_valence', 
@@ -542,43 +578,53 @@ def clean_eeg_mne_object(raw, subj_id):
         'nback_stimuli', 'nback_keypress'
     ]
     
-    #updating channel types
     mapping = {ch: 'misc' for ch in tech_ch_names if ch in clean_raw.ch_names}
     if 'music' in clean_raw.ch_names:
-        mapping['music'] = 'stim' # music is a trigger, 'stim' is safer
+        mapping['music'] = 'stim'
     if 'ECG' in clean_raw.ch_names:
         mapping['ECG'] = 'ecg'
         
     clean_raw.set_channel_types(mapping)
 
-    #montage and filtering
+    #montage
     montage = mne.channels.make_standard_montage('standard_1005')
     clean_raw.set_montage(montage, match_case=False, on_missing='ignore')
     
-    clean_raw.filter(l_freq=1.0, h_freq=8.0, fir_design='firwin', verbose=False) #1Hz high-pass is standard for ICA stability
+    #downsampling to 64 Hz before filtering and ICA saves memory and time
+    print("    -> Downsampling EEG to 64 Hz...")
+    clean_raw.resample(64.0, npad='auto', verbose=False)
 
-    #ICA on EEG + ECG
+    #filtering
+    clean_raw.filter(l_freq=1.0, h_freq=8.0, fir_design='firwin', verbose=False)
+
+    clean_raw = find_bad_channels_by_correlation(clean_raw, corr_thresh=0.4)
+    if clean_raw.info['bads']:
+        clean_raw.interpolate_bads(reset_bads=True, verbose=False)
+
+    #SSP for Stationary MRI Noise
+    clean_raw = remove_MRI_stationary_noise_with_SSP(clean_raw)
+
+    #ICA for heartbeats and blinks
     picks_for_ica = mne.pick_types(clean_raw.info, eeg=True, ecg=True)
     ica_raw = clean_raw.copy().pick(picks=picks_for_ica)
     
     ica = ICA(n_components=15, random_state=42, method='fastica')
     ica.fit(ica_raw, verbose=False)
 
-    #Artifact detection
     eog_idx, _ = ica.find_bads_eog(clean_raw, ch_name='Fp1', threshold=2.0)
-    
-    #For ECG, 'correlation' method
     ecg_idx, _ = ica.find_bads_ecg(clean_raw, method='correlation', threshold=1.5)
     
     ica.exclude = list(set(eog_idx + ecg_idx))
     print(f"    -> ICA: Ousting {len(ica.exclude)} components.")
 
-    #Diagnostic plots 
+    #diagnostic plots 
     plot_ica_diagnostics(clean_raw, ica, subj_id)
 
     ica.apply(clean_raw, verbose=False)
     
     return clean_raw
+    
+
 
 ############################################################################
 #specific to openneuro ds002725 :
@@ -616,7 +662,7 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
     eeg_fs = raw.info['sfreq']
     print(eeg_fs)
     eeg_length = raw.n_times
-    #TO DO : downsample eeg to 64 Hz or even 32Hz
+    #TO DO : downsample eeg to 100Hz, 64 Hz or even 32Hz
     #band-pass filter, for instance between 1 and 30 Hz or even better between 1 and 8 Hz DONE in clean_mne_eeg_object
     
     # Extract only the 'music' channel
@@ -751,8 +797,10 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 eeg_fs = raw.info['sfreq']
             
             try:
-                #calling the global preprocessing function
                 clean_raw = clean_eeg_mne_object(raw, subj_id)
+                    
+                #updating eeg_fs to the new resampled rate
+                eeg_fs = clean_raw.info['sfreq']
 
                 #aligning stimuli using the clean MNE object
                 aligned_stim = choose_stimulus_and_align_to_eeg(
@@ -789,17 +837,18 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                             chunk_idx = block[i : i + chunk_size]
 
                             if len(chunk_idx) > (15 * eeg_fs):
-                                # Extract chunks
+                                #chunks
                                 raw_chunk_stim = aligned_stim[chunk_idx, :]
                                 raw_chunk_eeg = raw_eeg_trial[chunk_idx, :]
                                 
-                                # Verify variance ONLY on EEG and Stim features
-                                if np.any(np.std(raw_chunk_stim, axis=0) == 0):
-                                    continue
+                                
+                                #if np.any(np.std(raw_chunk_stim, axis=0) == 0):
+                                #    continue
+                                #checking variance only on EEG 
                                 if np.any(np.std(raw_chunk_eeg, axis=0) == 0):
                                     continue
                                 
-                                # Standardize and store
+                                #standardize and store
                                 stimuli_list.append(zscore(raw_chunk_stim, axis=0))
                                 eeg_list.append(zscore(raw_chunk_eeg, axis=0))
                                 
@@ -991,7 +1040,8 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
 
 
 #################################################################################################################################################################
-#Song dataset treatment
+#SONG dataset treatment
+
 import scipy.io as sio
 import pandas as pd
 
