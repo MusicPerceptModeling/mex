@@ -602,7 +602,7 @@ def clean_eeg_mne_object(raw, subj_id):
         clean_raw.interpolate_bads(reset_bads=True, verbose=False)
 
     #SSP for Stationary MRI Noise
-    clean_raw = remove_MRI_stationary_noise_with_SSP(clean_raw)
+    #clean_raw = remove_MRI_stationary_noise_with_SSP(clean_raw)
 
     #ICA for heartbeats and blinks
     picks_for_ica = mne.pick_types(clean_raw.info, eeg=True, ecg=True)
