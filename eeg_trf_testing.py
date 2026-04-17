@@ -6,7 +6,7 @@ from mtrf.stats import crossval, nested_crossval
 
 #from eeg_utils.mtrf.stats import *
 
-from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackknife_corr
+from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackknife_corr, jackknife_ttest
 
 from eeg_utils.utils.fastcorr import *
 
@@ -18,7 +18,7 @@ import os
 import glob
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.stats import ttest_1samp, wilcoxon, zscore
+from scipy.stats import ttest_1samp, wilcoxon, shapiro, zscore
 import matplotlib.pyplot as plt
 from mtrf.model import TRF
 from mne.preprocessing import ICA
@@ -1244,6 +1244,51 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
         print("\nSignificant Channels (FDR Corrected):")
         for ch_idx in significant_channels:
             print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
+
+    # ====================================================================
+    # ROI-averaged statistical testing
+
+    print("\n==========================================")
+    print(" Computing ROI-Averaged Statistics...")
+    print("==========================================")
+
+    
+    # Region of Interest (ROI) - bilateral fronto-central-temporal cluster for broad auditory processing
+    roi_names = ['Fz', 'Cz', 'FC1', 'FC2', 'C3', 'C4', 'FC5', 'FC6', 'T7', 'T8', 'CP5', 'CP6'] 
+    
+    #indices for these specific channels
+    roi_indices = [valid_eeg_names.index(ch) for ch in roi_names if ch in valid_eeg_names]
+
+    if roi_indices:
+        # eeg_group_delta_z is shape (n_subjects, n_channels)
+        roi_delta_z = eeg_group_delta_z[:, roi_indices]
+
+        #averaging spatially across the ROI for each subject -> shape (n_subjects,)
+        subj_roi_averages = np.mean(roi_delta_z, axis=1)
+        mean_roi_enhancement = np.mean(subj_roi_averages)
+
+        #checking if the distribution of ROI averages is normal
+        stat_shap, p_shapiro = shapiro(subj_roi_averages)
+        
+        print(f"ROI Channels Used: {[valid_eeg_names[i] for i in roi_indices]}")
+        print(f"Mean ROI Enhancement: {mean_roi_enhancement:.4f}")
+        
+        #chooosing the appropriate test based on normality
+        if p_shapiro < 0.05:
+            print("  -> Normality violated (Shapiro-Wilk p < 0.05). Using Non-Parametric Wilcoxon Test.")
+            res = wilcoxon(subj_roi_averages, alternative='greater')
+            p_val_roi = res.pvalue
+            test_name = "Wilcoxon Signed-Rank"
+        else:
+            print("  -> Data is normally distributed. Using 1-Sample T-Test.")
+            res = ttest_1samp(subj_roi_averages, popmean=0.0, alternative='greater')# 1-sample t-test on the difference scores (delta_z), which is mathematically identical to a paired t-test of Full vs Baseline.
+            p_val_roi = res.pvalue
+            test_name = "1-Sample T-Test"
+
+        if p_val_roi < 0.05:
+            print(f"ROI {test_name}: p = {p_val_roi:.4f} *** SIGNIFICANT ***")
+        else:
+            print(f"ROI {test_name}: p = {p_val_roi:.4f} (Not Significant)")
 
     if all_behav_delta_z:
         print("\n==========================================")
