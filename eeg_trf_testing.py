@@ -10,6 +10,22 @@ from eeg_utils.utils.utils_statistics import bootstrap_permutation_test, jackkni
 
 from eeg_utils.utils.fastcorr import *
 
+import mne
+
+mne.set_log_level('WARNING')
+
+import os
+import glob
+import numpy as np
+from scipy.interpolate import interp1d
+from scipy.stats import ttest_1samp, wilcoxon, zscore
+import matplotlib.pyplot as plt
+from mtrf.model import TRF
+from mne.preprocessing import ICA
+
+import scipy.io as sio
+import pandas as pd
+
 #NOTES MEETING 10/04
 #TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation (IN PROGRESS), and the Bach dataset too 
 #TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
@@ -18,64 +34,130 @@ from eeg_utils.utils.fastcorr import *
 #TO DO (DONE - it actually makes things worse!): SSP could be used to eliminate the stationary noise from the MRI machine (only the first component currently eliminated) 
 #TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check
 #TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
-#NB: Giorgia didn't use banded_regularization
+#NB: Giorgia didn't use banded_regularization #TO DO differentiate depending on the analysis : use banded reg for EEG channels, use standard reg for arousal ?
 #TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
 #TO DO : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
+
 
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
     r_clipped = np.clip(r, -0.999, 0.999)
     return np.arctanh(r_clipped)
 
-def compare_direct_models(stimuli_list, eeg_list, fs):
-    """
-    Method 1: Comparison between baseline (energy only) and full (energy + IC) 
-    using the official mTRFpy Ridge Regression.
-    """
-    tmin, tmax = -0.1, 1.0 #0.7 to do like in the paper
-    k_folds = -1  # Leave-One-Out CV
-    regularization = np.logspace(-1, 4, 6)
+def compare_direct_models(stimuli_list, eeg_list, fs, use_banded=False):
+    tmin, tmax = -0.1, 1.0 
+    k_folds = -1  
+    regularization = np.logspace(-1, 6, 8) 
     trf = TRF(direction=1)
 
-    # Baseline model (Energy only)
+    # --- Baseline model (Energy only) ---
     baseline_stimuli = [stim[:, 0:1] for stim in stimuli_list]
     print("Fitting Baseline Model (Energy only)...") 
-    r_base, best_lambdas_base = nested_crossval(trf, baseline_stimuli, eeg_list, fs, tmin, tmax, regularization, k=k_folds, average=True, verbose=False)
+    r_base, best_lambdas_base = nested_crossval(
+        trf, baseline_stimuli, eeg_list, fs, tmin, tmax, regularization, 
+        k=k_folds, average=True, verbose=False
+    )
     opt_lambda_env = np.median(best_lambdas_base)
     
-    r_base = crossval(trf, baseline_stimuli, eeg_list, fs, tmin, tmax, opt_lambda_env, k=k_folds, average=False, verbose=False)
+    r_base = crossval(
+        trf, baseline_stimuli, eeg_list, fs, tmin, tmax, opt_lambda_env, 
+        k=k_folds, average=False, verbose=False
+    )
     if r_base.ndim == 2:
         r_base = np.mean(r_base, axis=0)
     z_base = fisher_z_transform(r_base)
-    print(f'Best energy-only regularization parameter: {opt_lambda_env}')
+    print(f'Best energy-only lambda: {opt_lambda_env}')
 
+    # --- Full model (Energy + IC) ---
+    if use_banded:
+        print("Fitting Full Model with BANDED Regularization (Manual List Grid Search)...")
+        best_r = -np.inf
+        opt_lambda_full = [1.0, 1.0]
+        n_epochs = len(stimuli_list)
 
-    # Full model (Energy + IC)
-    print("Fitting Full Model (Energy + IC)...")
-    # Because both predictors are Z-scored, standard Ridge without banded regularization should be okay 
-    r_full, best_lambdas_full = nested_crossval(trf, stimuli_list, eeg_list, fs, tmin, tmax, regularization, k=k_folds, average=True, verbose=False)
-    opt_lambda_full = np.median(best_lambdas_full)
+        #reg_env = np.logspace(0, 4, 5)
+        reg_env = np.logspace(-1, 3, 10)
+        #reg_ic = np.logspace(-1, 3, 5)
+        reg_ic = np.logspace(-1, 3, 10)
 
-    r_full = crossval(trf, stimuli_list, eeg_list, fs, tmin, tmax, opt_lambda_full, k=k_folds, average=False, verbose=False)
-    
-    if r_full.ndim == 2:
-        r_full = np.mean(r_full, axis=0)
+        for l_env in reg_env:
+            for l_ic in reg_ic:
+                fold_rs = []
+                for i in range(n_epochs):
+                    val_stim = stimuli_list[i]
+                    val_eeg = eeg_list[i]
+
+                    train_stim = [stimuli_list[j] for j in range(n_epochs) if j != i]
+                    train_eeg = [eeg_list[j] for j in range(n_epochs) if j != i]
+
+                    trf_temp = TRF(direction=1)
+
+                    trf_temp.train(
+                        train_stim, train_eeg, fs, tmin, tmax, 
+                        regularization=[l_env, l_ic], bands=[1, 1]
+                    )
+                    
+                    _, r = trf_temp.predict(val_stim, val_eeg)
+                    fold_rs.append(np.mean(r))
+
+                mean_grid_r = np.mean(fold_rs)
+                if mean_grid_r > best_r:
+                    best_r = mean_grid_r
+                    opt_lambda_full = [l_env, l_ic]
+
+        print(f'Best banded lambdas [Env, IC]: {opt_lambda_full}')
+
+        # Final LOO CV with the optimal lambdas
+        final_rs = []
+        for i in range(n_epochs):
+            val_stim = stimuli_list[i]
+            val_eeg = eeg_list[i]
+
+            train_stim = [stimuli_list[j] for j in range(n_epochs) if j != i]
+            train_eeg = [eeg_list[j] for j in range(n_epochs) if j != i]
+
+            trf_final = TRF(direction=1)
+            trf_final.train(
+                train_stim, train_eeg, fs, tmin, tmax, 
+                regularization=opt_lambda_full, bands=[1, 1]
+            )
+            _, r = trf_final.predict(val_stim, val_eeg)
+            final_rs.append(r)
+
+        r_full = np.mean(final_rs, axis=0)
+
+    else:
+        # Standard Ridge Fallback
+        r_full, best_lambdas_full = nested_crossval(
+            trf, stimuli_list, eeg_list, fs, tmin, tmax, regularization, 
+            k=k_folds, average=True, verbose=False
+        )
+        opt_lambda_full = np.median(best_lambdas_full)
+        r_full = crossval(
+            trf, stimuli_list, eeg_list, fs, tmin, tmax, opt_lambda_full, 
+            k=k_folds, average=False, verbose=False
+        )
+        if r_full.ndim == 2:
+            r_full = np.mean(r_full, axis=0)
+            
     z_full = fisher_z_transform(r_full)
-
-    # Predictive enhancement
     delta_z = z_full - z_base
 
     return z_full, z_base, delta_z, opt_lambda_full
 
 
-def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):#actually linear shifting would be even better but costs us in terms of data quantity
-    """
-    Method 2: Full model vs. a Null distribution created via circular shifting.
 
-    Parameters:
-    - n_perms: number of random shifts to perform.
-    - min_shift_sec: minimum temporal shift in seconds to ensure alignment is broken.
-    """
+
+"""
+
+def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):#actually linear shifting would be even better but costs us in terms of data quantity
+    
+    #Method 2: Full model vs. a Null distribution created via circular shifting.
+
+    #Parameters:
+    #- n_perms: number of random shifts to perform.
+    #- min_shift_sec: minimum temporal shift in seconds to ensure alignment is broken.
+    
     tmin, tmax = -0.1, 0.7
     k_folds = -1
     n_channels = eeg_list[0].shape[1]
@@ -133,9 +215,10 @@ def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_p
     p_values = np.sum(z_null_permutations >= z_full, axis=0) / n_perms
 
     return z_full, z_null_mean, delta_z_null, p_values
+    
+"""
 
-
-def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full, n_perms=100): #BEST OPTION
+def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full, n_perms=100): #BEST OPTION but to be corrected to only shuffle IC and not envelope
     """
     State-of-the-Art Null Distribution: 
     Predicts EEG using the acoustic/IC features from the WRONG epochs.
@@ -224,14 +307,7 @@ if __name__ == "__main__":
 ##########################################################################################################################################
 #Plotting topomap functions
 ##########################################################################################################################################
-import os
-import glob
-import numpy as np
-from scipy.interpolate import interp1d
-from scipy.stats import ttest_1samp, wilcoxon
-import mne
-import matplotlib.pyplot as plt
-from mtrf.model import TRF
+
 
 
 def plot_static_score_topomap(
@@ -383,6 +459,74 @@ def plot_group_level_topomap(
     return fig
 
 
+def plot_behavioral_trf_weights(trf_model: TRF, fs: float, tmin: float, tmax: float, subj_id: str):
+    """
+    Plots a 1D line graph of the TRF weights over time for behavioral data.
+    Specifically isolates Information Content (IC) predicting Arousal.
+    """
+    # Feature 1 = Information Content (0 is Envelope)
+    # Target 1 = Arousal (0 is Valence)
+    arousal_ic_weights = trf_model.weights[1, :, 1]
+
+    # matching X-axis based on the actual weight array length
+    n_lags = arousal_ic_weights.shape[0]
+    lags = np.linspace(tmin, tmax, n_lags)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    
+    ax.plot(lags, arousal_ic_weights, color='firebrick', linewidth=2, label="IC -> Arousal")
+    ax.axhline(0, color='black', linestyle='--', linewidth=1)
+    ax.axvline(0, color='gray', linestyle=':', linewidth=1)
+
+    ax.set_title(f"Temporal TRF Weights: Surprisal driving Arousal\nParticipant: {subj_id}")
+    ax.set_xlabel("Time Lag (seconds)")
+    ax.set_ylabel("TRF Weight (Influence on Joystick)")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
+
+
+def plot_group_behavioral_weights(all_weights: list, fs: float, tmin: float, tmax: float):
+    """
+    Plots the average 1D temporal TRF weights across all participants,
+    including a shaded region for the Standard Error of the Mean (SEM).
+    """
+    weights_matrix = np.stack(all_weights, axis=0)
+    
+    mean_weights = np.mean(weights_matrix, axis=0)
+    sem_weights = np.std(weights_matrix, axis=0) / np.sqrt(weights_matrix.shape[0])
+    
+    n_lags = mean_weights.shape[0]
+    lags = np.linspace(tmin, tmax, n_lags)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    
+    ax.plot(lags, mean_weights, color='firebrick', linewidth=2, label="Mean IC -> Arousal")
+    
+    ax.fill_between(
+        lags, 
+        mean_weights - sem_weights, 
+        mean_weights + sem_weights, 
+        color='firebrick', 
+        alpha=0.3, 
+        label="Standard Error"
+    )
+
+    ax.axhline(0, color='black', linestyle='--', linewidth=1)
+    ax.axvline(0, color='gray', linestyle=':', linewidth=1)
+
+    ax.set_title("Group-Level Temporal TRF: Surprisal driving Arousal")
+    ax.set_xlabel("Time Lag (seconds)")
+    ax.set_ylabel("Mean TRF Weight (Influence on Joystick)")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return fig
+
 
 #######################################################################################################################
 #Preprocessing and eeg preparation and alignment
@@ -415,10 +559,6 @@ def plot_ica_diagnostics(raw_before, ica, subj_id):
 
 
 #general preprocessing :
-import numpy as np
-import mne
-from mne.preprocessing import ICA
-from scipy.stats import zscore
 
 def apply_bandpass_filter(raw: mne.io.BaseRaw, l_freq: float = 1.0, h_freq: float = 8.0) -> mne.io.BaseRaw:
     print(f"    -> Bandpass filtering ({l_freq} - {h_freq} Hz)...")
@@ -716,13 +856,13 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
         n_eeg_samples = int(np.ceil(max_duration_sec * eeg_fs))
         eeg_time = np.arange(n_eeg_samples) / eeg_fs
         
-        # Interpolate Envelope (linear is usually best for continuous audio energy)
+        #interpolating envelope (linear is usually best for continuous audio energy)
         env_interpolator = interp1d(
             env_time, env_data, kind='linear', bounds_error=False, fill_value=0.0
         )
         env_aligned = env_interpolator(eeg_time)
         
-        # Interpolate IC 
+        #interpolating IC 
         ic_interpolator = interp1d(
             ic_time, ic_data, kind='previous', bounds_error=False, fill_value=0.0
         ) #TO DO : what is best here between linear and previous?
@@ -745,15 +885,8 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
     return aligned_features
 
 
-import os
-import glob
-import numpy as np
-from scipy.stats import ttest_1samp, zscore
-import mne
-import matplotlib.pyplot as plt
-from mtrf.model import TRF
 
-def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7):
+def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7, use_banded=False):
     """
     Loops through an OpenNeuro BIDS dataset, aligns data, runs Banded TRF, 
     and computes robust group-level non-parametric summary statistics.
@@ -764,6 +897,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         
     all_delta_z = []
     all_z_base = []
+    
     channel_names = None
     eeg_fs = None 
     
@@ -773,6 +907,12 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
         'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
     ]
+    
+
+    all_behav_delta_z = []
+    all_arousal_weights = []
+    
+    behav_channel_names = ['ft_valance', 'ft_arousal']
 
     for subj_path in subject_folders:
         subj_id = os.path.basename(subj_path)
@@ -781,7 +921,9 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         print(f"=============================")
         
         eeg_list = []
+        behav_list = []
         stimuli_list = []
+
         
         edf_files = sorted(glob.glob(os.path.join(subj_path, 'eeg', '*.edf')))
         if not edf_files:
@@ -823,6 +965,13 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 raw_eeg_trial = clean_raw.get_data(picks=eeg_picks).T
                 raw_eeg_trial = np.nan_to_num(raw_eeg_trial, nan=0.0)
 
+                #extracting behavioral data (valence and arousal)
+                behav_picks = mne.pick_channels(clean_raw.ch_names, behav_channel_names)
+                if len(behav_picks) > 0:
+                    raw_behav_trial = np.nan_to_num(clean_raw.get_data(picks=behav_picks).T, nan=0.0)
+                else:
+                    raw_behav_trial = None
+
                 #chunking for "data augmentation" 
                 valid_indices = np.where(aligned_stim[:, 0] > 0)[0]
                 if len(valid_indices) == 0:
@@ -852,6 +1001,14 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                                 #standardize and store
                                 stimuli_list.append(zscore(raw_chunk_stim, axis=0))
                                 eeg_list.append(zscore(raw_chunk_eeg, axis=0))
+
+                                if raw_behav_trial is not None:
+                                    raw_chunk_behav = raw_behav_trial[chunk_idx, :]
+                                    #if the user didn't move the joystick, adding a tiny bit of noise so zscore doesn't return NaNs
+                                    if np.any(np.std(raw_chunk_behav, axis=0) == 0):
+                                        print(f"user {subj_id} didn't move the joystick in a 30sec chunk from {edf_file}, adding noise to avoid NaNs")
+                                        raw_chunk_behav += np.random.normal(0, 1e-8, raw_chunk_behav.shape)
+                                    behav_list.append(zscore(raw_chunk_behav, axis=0))
                                 
             except ValueError as e:
                 print(f"  [!] {e} Skipping EDF.")
@@ -865,13 +1022,13 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
         try:
             print(f"  -> Fitting direct models (Cross-Validation on {len(stimuli_list)} epochs)...")
 
-            z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
+            z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs, use_banded=use_banded)
             
             delta_z = np.nan_to_num(delta_z, nan=0.0)
             z_base = np.nan_to_num(z_base, nan=0.0)
             all_delta_z.append(delta_z)
             all_z_base.append(z_base)
-            print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
+            print(f"[{subj_id}] Mean EEG channel IC predictive enhancement: {np.mean(delta_z):.4f}")
 
             #plotting topomap according to the value of predictive enhancement obtained from IC in each channel
             eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
@@ -889,8 +1046,57 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
                 vmin=0.0  
             )
             fig.savefig(f"results/topomap_{subj_id}_delta_z.png", dpi=300)
-            plt.close(fig) 
+            plt.close(fig)
 
+            if behav_list:
+                print(f"  -> Fitting models for Continuous Emotion (Valence/Arousal)...")
+                
+                # Capture the optimal lambda (opt_lambda_b) instead of using '_'
+                z_full_b, z_base_b, delta_z_b, opt_lambda_b = compare_direct_models(stimuli_list, behav_list, eeg_fs, use_banded=use_banded)
+                
+                delta_z_b = np.nan_to_num(delta_z_b, nan=0.0)
+                all_behav_delta_z.append(delta_z_b)
+                print(f"[{subj_id}] Emotion predictive enhancement: {np.mean(delta_z_b):.4f}")
+                
+                # -- Add this to plot the weights! --
+                print(f"  -> Extracting temporal weights for Arousal...")
+                
+                behav_trf = TRF(direction=1)
+                
+                # Check if opt_lambda_b is banded (a list/array) or standard (a scalar)
+                if isinstance(opt_lambda_b, (list, np.ndarray)):
+                    behav_trf.train(
+                        stimuli_list,  # Passing the python list directly!
+                        behav_list,    # Passing the python list directly!
+                        eeg_fs, 
+                        tmin=-0.1, 
+                        tmax=1.0,      # Matched to compare_direct_models
+                        regularization=opt_lambda_b,
+                        bands=[1, 1]
+                    )
+                else:
+                    behav_trf.train(
+                        stimuli_list, 
+                        behav_list, 
+                        eeg_fs, 
+                        tmin=-0.1, 
+                        tmax=1.0,      # Matched to compare_direct_models
+                        regularization=opt_lambda_b
+                    )
+
+                fig_behav = plot_behavioral_trf_weights(
+                    trf_model=behav_trf, 
+                    fs=eeg_fs, 
+                    tmin=-0.1, 
+                    tmax=1.0,         # Matched to compare_direct_models
+                    subj_id=subj_id
+                )
+                fig_behav.savefig(f"results/arousal_weights_{subj_id}.png", dpi=300)
+                plt.close(fig_behav)
+
+                subj_arousal_weights = behav_trf.weights[1, :, 1]
+                all_arousal_weights.append(subj_arousal_weights)
+            
             """# Fit final full model with banded constraints
             print(f"  -> Fitting final Full Model to extract weights...")
             all_stimuli_concat = np.vstack(stimuli_list)
@@ -912,22 +1118,32 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
             
             #fitting one final full model for each subject on all trials to get the weights for each lag 
             print(f"  -> Fitting final full model to extract weights")
-            all_stimuli_concat = np.vstack(stimuli_list)
-            all_eeg_concat = np.vstack(eeg_list)
-
+            
             final_trf = TRF(direction=1)
-
-            final_trf.train(
-                all_stimuli_concat, 
-                all_eeg_concat, 
-                eeg_fs, 
-                tmin=-0.1, 
-                tmax=0.7, 
-                regularization=opt_lambda_full
-            )
+            
+            # If we used banded, pass the bands argument. Otherwise, standard.
+            if isinstance(opt_lambda_full, list):
+                final_trf.train(
+                    stimuli_list, # Passing the list directly!
+                    eeg_list, 
+                    eeg_fs, 
+                    tmin=-0.1, 
+                    tmax=1.0, 
+                    regularization=opt_lambda_full,
+                    bands=[1, 1]
+                )
+            else:
+                final_trf.train(
+                    stimuli_list, 
+                    eeg_list, 
+                    eeg_fs, 
+                    tmin=-0.1, 
+                    tmax=1.0, 
+                    regularization=opt_lambda_full
+                )
 
             sliced_weights = final_trf.weights[:, :, eeg_indices]
-            final_trf.weights = sliced_weights 
+            final_trf.weights = sliced_weights
 
             fig = plot_participant_trf_topomaps(
                 trf_model=final_trf,
@@ -959,7 +1175,7 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
     eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
     valid_eeg_names = [channel_names[i] for i in eeg_indices]
     
-    #baseline predictions z-transformed pearson correlation coefficients 
+    #baseline (envelope) predictions z-transformed pearson correlation coefficients 
     group_z_base = np.stack(all_z_base, axis=0) 
     
     #subset to the 30 scalp electrodes
@@ -1022,34 +1238,76 @@ def run_group_level_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt
     
     print(f"Total Subjects Processed: {eeg_group_delta_z.shape[0]}")
     print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
-    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
+    print(f"Number of EEG channels with significant IC enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
     
     if len(significant_channels) > 0:
         print("\nSignificant Channels (FDR Corrected):")
         for ch_idx in significant_channels:
             print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
 
+    if all_behav_delta_z:
+        print("\n==========================================")
+        print(" Computing Group-Level Behavioural Statistics...")
+        print("==========================================")
+        
+        # Shape becomes (n_subjects, 2) [Valence, Arousal]
+        group_behav_delta_z = np.stack(all_behav_delta_z, axis=0) 
+        
+        mean_behav_delta_z = np.mean(group_behav_delta_z, axis=0)
+        std_behav_delta_z = np.std(group_behav_delta_z, axis=0)
+        
+        # Non-parametric testing for the 2 behavioral channels
+        p_values_behav = []
+        for ch in range(group_behav_delta_z.shape[1]):
+            try:
+                _, p = jackknife_ttest(group_behav_delta_z[:, ch], alternative='greater')
+            except Exception:
+                # Fallback to standard Wilcoxon if jackknife fails
+                res = wilcoxon(group_behav_delta_z[:, ch], alternative='greater') 
+                p = res.pvalue
+            p_values_behav.append(p)
+            
+        p_values_behav = np.array(p_values_behav)
+        
+        # FDR correction for the 2 p-values
+        reject_null_behav, p_values_fdr_behav = mne.stats.fdr_correction(p_values_behav, alpha=0.05, method='indep')
+        
+        print(f"Total subjects processed for behavioural testing: {group_behav_delta_z.shape[0]}")
+        print("Continuous Behavioural data predictive enhancement (IC over envelope baseline):")
+        
+        for ch_idx, behav_name in enumerate(behav_channel_names):
+            sig_flag = "*** SIGNIFICANT ***" if reject_null_behav[ch_idx] else "(Not Significant)"
+            print(f" - {behav_name.upper()}: Δz = {mean_behav_delta_z[ch_idx]:.4f} (p_fdr = {p_values_fdr_behav[ch_idx]:.4f}) {sig_flag}")
 
+        if all_arousal_weights:
+            fig_group_behav = plot_group_behavioral_weights(
+                all_weights=all_arousal_weights, 
+                fs=eeg_fs, 
+                tmin=-0.1, 
+                tmax=0.7
+            )
+            fig_group_behav.savefig("results/group_level_arousal_weights.png", dpi=300)
+            plt.close(fig_group_behav)
+            print("Saved group-level behavioral plot to results/group_level_arousal_weights.png")
+            
+    #adding behavioral results to the final return dictionary
     return {
         "mean_delta_z": mean_delta_z,
         "std_delta_z": std_delta_z,
         "p_values_raw": p_values,
         "p_values_fdr": p_values_fdr,
         "significant_mask": reject_null,
-        "channel_names": valid_eeg_names
+        "channel_names": valid_eeg_names,
+        "behav_mean_delta_z": mean_behav_delta_z if all_behav_delta_z else None,
+        "behav_p_values_fdr": p_values_fdr_behav if all_behav_delta_z else None,
+        "behav_names": behav_channel_names if all_behav_delta_z else None
     }
+
+
 
 
 #################################################################################################################################################################
 #SONG dataset treatment
-
-import scipy.io as sio
-import pandas as pd
-
-import numpy as np
-import pandas as pd
-from scipy.interpolate import interp1d
-from scipy.stats import zscore
 
 def prepare_song_trial(eeg_matrix, env_path, ic_csv_path, eeg_fs, env_dt=0.015625, ic_dt=None):
     """
@@ -1073,24 +1331,24 @@ def prepare_song_trial(eeg_matrix, env_path, ic_csv_path, eeg_fs, env_dt=0.01562
     
     env_time = np.arange(len(env_data)) * env_dt
     
-    #Interpolate IC using the CSV's explicit time vector
+    #interpolate IC using the CSV's explicit time vector
     ic_interpolator = interp1d(ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0)
-    ic_aligned = ic_interpolator(eeg_time)
+    ic_aligned = ic_interpolator(eeg_time)#TO DO decide between linear and previous interpolation methods
     
-    #Interpolate Envelope
+    #interpolate envelope
     env_interpolator = interp1d(env_time, env_data, kind='linear', bounds_error=False, fill_value=0.0)
     env_aligned = env_interpolator(eeg_time)
     
-    #Combine Acoustic Envelope and IC into one Stimulus Matrix
+    #combine acoustic envelope and IC into one stimulus matrix
     aligned_stim = np.column_stack((env_aligned, ic_aligned))
     
-    #Z-score both the Stimulus and the EEG to remove baseline biases
+    #Z-score both the stimulus and the EEG to remove baseline biases
     clean_stim = np.nan_to_num(zscore(aligned_stim, axis=0))
     clean_eeg = np.nan_to_num(zscore(eeg_matrix, axis=0))
     
     return clean_stim, clean_eeg
 
-def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.004, ic_dt=0.5):
+def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.015625, ic_dt=0.7, use_banded=False):
     
     mat_files = sorted(glob.glob(os.path.join(mat_dir, "pre_dataSub*.mat")))
     csv_files = sorted(glob.glob(os.path.join(csv_dir, "ic_*_song.csv")))
@@ -1111,7 +1369,7 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
         print(f"\n=============================")
         print(f" Processing {subj_id}...")
         
-        # 1. Load the preprocessed subject data
+        #loading preprocessed subject data
         mat_data = sio.loadmat(mat_file)
         eeg_struct = mat_data['eeg'][0, 0]
         
@@ -1134,27 +1392,27 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
         # TO DO: generalise if needed - for now this strictly assumes eeg_trials[0] is ic_01_song, eeg_trials[1] is ic_02_song, etc.
         for trial_idx in range(len(csv_files)):
             
-            # Extract the raw EEG array from the MATLAB cell
+            # extract the raw EEG array from the MATLAB cell
             trial_eeg = eeg_trials[trial_idx] 
             
-            # Safely catch and skip empty MATLAB arrays (e.g., rejected trials)
+            # safely catch and skip empty MATLAB arrays (e.g., rejected trials)
             if trial_eeg.size == 0 or max(trial_eeg.shape) < (eeg_fs * 2):
                 print(f"  [!] Warning: Trial {trial_idx} is empty or too short (< 2s). Skipping.")
                 continue
                 
-            # Squeeze out any hidden MATLAB cell dimensions
+            # squeeze out any hidden MATLAB cell dimensions
             trial_eeg = np.squeeze(trial_eeg)
             if len(trial_eeg.shape) < 2:
                 print(f"  [!] Warning: Trial {trial_idx} has invalid dimensions. Skipping.")
                 continue
                 
-            # Transpose to (time, channels) if necessary
+            # transpose to (time, channels) if necessary
             if trial_eeg.shape[0] < trial_eeg.shape[1]:
                 trial_eeg = trial_eeg.T
                 
             current_csv_path = csv_files[trial_idx]
             
-            # --- THE FILE MATCHING MAGIC ---
+            # file matching between envelope and ic
             csv_filename = os.path.basename(current_csv_path)
             env_filename = csv_filename.replace('ic_', '').replace('.csv', '.npy')
             env_path = os.path.join(env_dir, env_filename)
@@ -1164,7 +1422,7 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
                 continue
             # --------------------------------
             
-            # Prepare and align
+            #prepare and align
             clean_stim, clean_eeg = prepare_song_trial(
                 eeg_matrix=trial_eeg, 
                 env_path=env_path, 
@@ -1182,14 +1440,58 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
         # TRF Cross-Validation
         print(f"  -> Fitting direct models for {subj_id} on {len(stimuli_list)} epochs...")
-        z_full, z_base, delta_z, opt_lam = compare_direct_models(stimuli_list, eeg_list, eeg_fs)
+        z_full, z_base, delta_z, opt_lam = compare_direct_models(stimuli_list, eeg_list, eeg_fs, use_banded=use_banded)
         
         delta_z = np.nan_to_num(delta_z, nan=0.0)
-        z_base = np.nan_to_num(z_base, nan=0.0) # Ensure z_base is also cleaned
+        z_base = np.nan_to_num(z_base, nan=0.0)
         
         all_delta_z.append(delta_z)
-        all_z_base.append(z_base) # Ensure we track this for the group stats
+        all_z_base.append(z_base)
         print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
+        
+        #fitting one full model on all trials for each given subject to extract and plot SONG weights 
+        print(f"  -> Fitting final full model to extract weights")
+            
+        final_trf = TRF(direction=1)
+            
+        # If we used banded, pass the bands argument. Otherwise, standard.
+        if isinstance(opt_lambda_full, list):
+            final_trf.train(
+                stimuli_list, # Passing the list directly!
+                eeg_list, 
+                eeg_fs, 
+                tmin=-0.1, 
+                tmax=1.0, 
+                regularization=opt_lambda_full,
+                bands=[1, 1]
+            )
+        else:
+            final_trf.train(
+                stimuli_list, 
+                eeg_list, 
+                eeg_fs, 
+                tmin=-0.1, 
+                tmax=1.0, 
+                regularization=opt_lambda_full
+            )
+
+        sliced_weights = final_trf.weights[:, :, eeg_indices]
+        final_trf.weights = sliced_weights
+
+        #plot and save
+        fig = plot_participant_trf_topomaps(
+            trf_model=final_trf,
+            ch_names=valid_eeg_names, 
+            fs=eeg_fs,
+            tmin=-0.1,
+            subj_id=subj_id,
+            feature_idx=1,
+            feature_name="Information Content (IC)",
+            times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] 
+        )
+        fig.savefig(f"results/topomap_song_{subj_id}_IC_weights.png", dpi=300)
+        plt.close(fig)
+        # ------------------------------------------------------------------
         
         
     # ====================================================================
@@ -1308,7 +1610,10 @@ if __name__ == "__main__":
     
     #adding the time-step parameters to the parser
     parser.add_argument('--env_dt', type=float, default=0.015625, help="Time step for the acoustic envelope (e.g., 1/64)")
-    parser.add_argument('--ic_dt', type=float, default=0.5, help="Time step for the Information Content")
+    parser.add_argument('--ic_dt', type=float, default=0.7, help="Time step for the Information Content")
+
+    #potential banded regularization
+    parser.add_argument('--banded', action='store_true', help="Use Banded Ridge Regularization for the Full Model")
 
     #parsing arguments from the terminal
     args = parser.parse_args()
@@ -1321,10 +1626,11 @@ if __name__ == "__main__":
     # ==========================================
     if args.dataset == 'openneuro':
         print("\n=== Launching OpenNeuro Pipeline ===")
-        results = run_group_level_analysis(
+        results = run_openneuro_dataset_analysis(
             bids_root_dir=args.bids_dir, 
             env_dir=args.env_dir, 
-            ic_dir=args.ic_dir
+            ic_dir=args.ic_dir,
+            use_banded=args.banded
         )
         
         fig = plot_group_level_topomap(
@@ -1338,6 +1644,20 @@ if __name__ == "__main__":
         fig.savefig("results/group_level_enhancement_openneuro.png", dpi=300)
         print("Saved OpenNeuro topomap to results/group_level_enhancement_openneuro.png")
 
+        raw_p_vals = results["p_values_raw"]
+        ch_names = results["channel_names"]
+        mean_dz = results["mean_delta_z"]
+
+        print("\n--- Uncorrected (Raw) EEG Enhancements IC vs envelope baseline (p < 0.05) ---")
+        found_any = False
+        for i, p in enumerate(raw_p_vals):
+            if p < 0.05:
+                print(f" - {ch_names[i]}: Δz = {mean_dz[i]:.4f} (raw p = {p:.4f})")
+                found_any = True
+                
+        if not found_any:
+            print(" No channels reached uncorrected significance.")
+
     # ==========================================
     # BRANCH 2: SONG Dataset
     # ==========================================
@@ -1350,7 +1670,8 @@ if __name__ == "__main__":
             csv_dir=args.csv_dir,
             eeg_fs=64,
             env_dt=args.env_dt,  
-            ic_dt=args.ic_dt     
+            ic_dt=args.ic_dt,
+            use_banded=args.banded
         )
         
         fig = plot_group_level_topomap(
