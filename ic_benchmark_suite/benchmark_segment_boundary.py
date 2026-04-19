@@ -80,11 +80,12 @@ def segment_boundary_alignment(
     metadata_ds: Dataset,
     periode_frames : float,
     time_offset_frame : int = 0,
-    segment_inclusion: str = 'all',
-    labels = 'lowercase'
+    repetition_mode: str = 'all',
+    hiearchy_levels = 'lowercase',
+    exclude_segments = ['Z', 'Silence', 'End']
 ):
     num_proc = None
-    metadata_ds = metadata_ds.select_columns(['id', labels])
+    metadata_ds = metadata_ds.select_columns(['id', hiearchy_levels])
     model_outputs = model_outputs.sort('id')
     metadata_ds = metadata_ds.sort('id')
     common_ids = set(model_outputs['id']).intersection(set(metadata_ds['id']))
@@ -97,7 +98,7 @@ def segment_boundary_alignment(
 
     std = 5.0
     # for noise_level_index, nl in enumerate(concat[0]['noise_level']):
-    res_all_ = concat.remove_columns(['id']).map(calc_peaks, fn_kwargs=dict(labels=labels, std=std, periode_frames=periode_frames, time_offset_frame=time_offset_frame, segment_inclusion=segment_inclusion), keep_in_memory=True, num_proc=num_proc)
+    res_all_ = concat.remove_columns(['id']).map(calc_peaks, fn_kwargs=dict(labels=hiearchy_levels, std=std, periode_frames=periode_frames, time_offset_frame=time_offset_frame, segment_inclusion=repetition_mode), keep_in_memory=True, num_proc=num_proc)
     # parts = np.array(res_all[type_]['part'])
     sweep_result = []
     for nl in res_all_.column_names:

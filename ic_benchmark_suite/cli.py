@@ -98,8 +98,8 @@ class BenchmarkSuite:
                 task_ds_segment,
                 periode_frames=periode_frames,
                 time_offset_frame=time_offset_frame,
-                segment_inclusion=segment_inclusion,
-                labels = ['lowercase', 'uppercase', 'functions']
+                repetition_mode=segment_inclusion,
+                hiearchy_levels = ['lowercase', 'uppercase', 'functions']
             ) for segment_inclusion in ['all', 'only_first_occurence', 'change']
         ]
         results.append(

@@ -1,3 +1,4 @@
+from functools import reduce
 import math
 import re
 from typing import Dict, List, Mapping
@@ -6,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scipy.stats
-from datasets import Dataset, Features, Sequence, Value, List as FList
-
+from datasets import Dataset, Features, Sequence, Value, List as FList, concatenate_datasets
+from .welford import merge as welford_merge, std as welford_std
 
 def _salami_id_extractor(path: Path) -> int:
     match = re.match(r"^\D*(?P<id>\d+)$", path.stem)
@@ -74,19 +75,17 @@ def _model_output_scheme(labels: List[str]) -> Features:
         }
     )
 
-def _merge_val_with_metadata(nll_dataset, salami_metadata_df):
-    """Join nll rows with SALAMI metadata on id and return row dictionaries."""
-    nll_df = nll_dataset.to_pandas()
-    merged = nll_df.merge(salami_metadata_df, on="id", how="inner")
-    return merged
-
-
 def _extract_segment_df_from_nll_dataset(
-    nll_dataset,
+    nll_dataset : Dataset,
     segment_names: List[str],
     period_frames: float,
-    value_column: str = "nll",
+    # value_column: str = "nll",
+    value_columns: List[str],
     time_offset_frame: int = 0,
+    normalize: bool = True,
+    num_proc = None,
+    exclude_segments = ['Z', 'Silence', 'End'],
+    merge_variations = False,
 ):
     """
     Build a segment-level table equivalent to the logic used in eval.py.
@@ -97,34 +96,56 @@ def _extract_segment_df_from_nll_dataset(
     - each segment name in segment_names with value dict or list[dict]
       containing start_sec, end_sec, type, optional anidx
     """
-    out_rows = []
 
-    for ex in nll_dataset:
+    mapped = nll_dataset.map(
+        _segment_agg_fn,
+        fn_kwargs=dict(
+            segment_names=segment_names,
+            period_frames=period_frames,
+            value_columns=value_columns,
+            time_offset_frame=time_offset_frame,
+            merge_variations=merge_variations
+        ),
+        keep_in_memory=True,
+        num_proc=num_proc,
+        remove_columns=nll_dataset.column_names,
+    )
+    all_results = [item for batch in mapped["all_res"] for item in batch]
+    segment_df = pd.DataFrame.from_records(all_results)
+    exclude_segments_norm = {str(s).casefold() for s in exclude_segments}
+    segment_df = segment_df[
+        ~segment_df["type"].astype(str).str.casefold().isin(exclude_segments_norm)
+    ]
+    if normalize:
+        for value_column in segment_df["value_column"].unique():
+            mask = segment_df["value_column"] == value_column
+            df = segment_df.loc[mask, ["numel", "mean", "welford"]]
+            welford_state = reduce(welford_merge, zip(df["numel"], df["mean"], df["welford"]))
+            mean = welford_state[1]
+            std = welford_std(welford_state)
+            if std == 0:
+                segment_df.loc[mask, "mean"] = 0.0
+            else:
+                segment_df.loc[mask, "mean"] = (segment_df.loc[mask, "mean"] - mean) / std
+    if segment_df.empty:
+        return segment_df
+    segment_df = segment_df.drop(columns=["numel", "welford"])
+
+    return segment_df
+
+def _segment_agg_fn(ex, segment_names, period_frames, value_columns, time_offset_frame, merge_variations = False):
+    outputs = []
+    for value_column in value_columns:
         if value_column not in ex:
             raise ValueError(f"Missing required field '{value_column}' in example")
 
         nlls = np.asarray(ex[value_column])
-        if nlls.ndim == 1:
-            nlls = nlls[:, None]
-        elif nlls.ndim != 2:
-            raise ValueError(f"{value_column} should be 1D or 2D, got shape={nlls.shape}")
-        nlls = nlls.copy()
         if "is_silence" in ex:
-            # raise ValueError("Missing required field 'is_silence' in example")
             is_silence = np.asarray(ex["is_silence"], dtype=bool)
             nlls[is_silence] = np.nan
-
+            
         for seg_name in segment_names:
-            if seg_name not in ex:
-                continue
-
-            seg = ex[seg_name]
-            if isinstance(seg, Mapping):
-                segs = [seg]
-            elif isinstance(seg, list) or isinstance(seg, np.ndarray):
-                segs = seg
-            else:
-                raise ValueError(f"Expected dict or list for {seg_name}, got {type(seg)}")
+            segs = ex[seg_name]
 
             for segment in segs:
                 end_secs = np.asarray(segment["end_sec"])
@@ -134,7 +155,7 @@ def _extract_segment_df_from_nll_dataset(
                 frames = math.ceil(np.nanmax(end_secs) / period_frames)
                 pad_len = max(frames - len(nlls), 0)
                 if pad_len > 0:
-                    pad = np.empty((pad_len, nlls.shape[1]))
+                    pad = np.empty((pad_len,))
                     pad.fill(np.nan)
                     nlls_padded = np.concatenate([nlls, pad], axis=0)
                 else:
@@ -142,82 +163,99 @@ def _extract_segment_df_from_nll_dataset(
 
                 type_counts = {}
                 for i, (start, end, type_) in enumerate(zip(start_secs, end_secs, types)):
+                    type_ = str(type_)
+                    if merge_variations:
+                        type_ = type_.strip("'")
+                    
                     start_frame = max(0, round(start / period_frames) - time_offset_frame)
                     end_frame = max(0, round(end / period_frames) - time_offset_frame)
                     nll_window = nlls_padded[start_frame:end_frame+1]
-
+                    empty_window = np.array(np.nan) #np.empty((), dtype=nlls_padded.dtype)
                     if len(nll_window) > 0:
-                        mean_nll = np.nanmean(nll_window, axis=0).tolist()
-                        min_nll = np.nanmin(nll_window, axis=0).tolist()
-                        max_nll = np.nanmax(nll_window, axis=0).tolist()
+                        mask = ~np.isnan(nll_window)
+                        numel = np.sum(mask, axis=0)
+                        mean_nll = np.mean(nll_window, axis=0, where=mask) if numel > 0 else empty_window                            
+                        min_nll = np.min(nll_window, axis=0, where=mask, initial=float('inf')) if numel > 0 else empty_window
+                        max_nll = np.max(nll_window, axis=0, where=mask, initial=float('-inf')) if numel > 0 else empty_window
+                        # NOTE: for standardization.
+                        welford = np.sum((nll_window[mask] - mean_nll) ** 2, axis=0)
+
+
                     else:
-                        mean_nll = [np.nan] * nlls_padded.shape[1]
-                        min_nll = [np.nan] * nlls_padded.shape[1]
-                        max_nll = [np.nan] * nlls_padded.shape[1]
+                        numel = np.array(0)
+                        mean_nll = empty_window
+                        min_nll = empty_window
+                        max_nll = empty_window
+                        welford = empty_window
 
                     nrep = type_counts.setdefault(type_, 0)
                     type_counts[type_] += 1
 
-                    out_rows.append(
-                        {
+                    outputs.append( {
+                            "value_column": value_column,
                             "id": ex["id"],
                             "seg_name": seg_name,
                             "anidx": segment.get("anidx", "-1"),
-                            "noise_level": ex.get("noise_level", -1),
                             "type": type_,
-                            "nrep": float(nrep),
+                            "nrep": nrep,
                             "nseg": i,
-                            "mean_nll": mean_nll,
-                            "min_nll": min_nll,
-                            "max_nll": max_nll,
-                        }
-                    )
-
-    segment_df = pd.DataFrame(out_rows)
-
-    if segment_df.empty:
-        return segment_df
-
-    segment_df = segment_df.explode(["mean_nll", "min_nll", "max_nll", "noise_level"]).convert_dtypes()
-    segment_df.loc[segment_df["noise_level"].isna(), "noise_level"] = -1
-    return segment_df
+                            "mean": mean_nll.item(),
+                            "min": min_nll.item(),
+                            "max": max_nll.item(),
+                            "numel": numel.item(),
+                            "welford": welford.item(),
+                    })
+                    
+    return {'all_res': outputs}
 
 
-def run_repetition_test(segment_df, label_col: str | None = "label"):
+def run_repetition_test(segment_df, value_col: str | None = None):
     """Vectorized repetition test with optional per-label results.
 
-    When label_col is None, behaves like the previous single-label function and
+    When value_col is None, behaves like the previous single-label function and
     returns: dict[seg_name] -> (summary, residual_df).
 
-    When label_col is set, returns nested results:
-    dict[label] -> dict[seg_name] -> (summary, residual_df).
+    When value_col is set, returns nested results:
+    dict[value] -> dict[seg_name] -> (summary, residual_df).
     """
     df = segment_df.copy()
 
-    required_cols = {"id", "type", "nrep", "mean_nll", "seg_name", "anidx"}
-    if label_col is not None:
-        required_cols.add(label_col)
+    required_cols = {"id", "type", "nrep", "mean", "seg_name", "anidx"}
+    if value_col is not None:
+        required_cols.add(value_col)
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"segment_df is missing required columns: {sorted(missing)}")
 
-    df["mean_nll"] = pd.to_numeric(df["mean_nll"], errors="coerce")
+    df["mean"] = pd.to_numeric(df["mean"], errors="coerce")
 
     sort_cols = ["seg_name", "id", "type", "anidx", "nrep"]
     diff_group_cols = ["seg_name", "id", "type", "anidx"]
     agg_group_cols = ["seg_name"]
 
-    if label_col is not None:
-        sort_cols = [label_col] + sort_cols
-        diff_group_cols = [label_col] + diff_group_cols
-        agg_group_cols = [label_col] + agg_group_cols
+    if value_col is not None:
+        sort_cols = [value_col] + sort_cols
+        diff_group_cols = [value_col] + diff_group_cols
+        agg_group_cols = [value_col] + agg_group_cols
 
     df = df.sort_values(sort_cols)
-    df["diff_val"] = df.groupby(diff_group_cols)["mean_nll"].diff()
-    res = df.dropna(subset=["diff_val"]).copy()
+    df["diff_val"] = df.groupby(diff_group_cols)["mean"].diff()
+    df = df.sort_values([value_col] + ["seg_name", "id", "anidx", "nseg"])
+    repetition_mode = ['contiguous', 'first']
+
+    mask = ~df["diff_val"].isna()
+    if not 'all' in repetition_mode:
+        if 'contiguous' in repetition_mode:
+            same_as_prev = df["type"].eq(df["type"].shift(1))
+            mask &= same_as_prev
+        if 'first' in repetition_mode:
+            # df.loc[df.nrep != 1, ['diff_val']] = np.nan
+            mask &= df.nrep == 1
+    # res = df.dropna(subset=["diff_val"]).copy()
+    res = df.loc[mask]
 
     if res.empty:
-        if label_col is None:
+        if value_col is None:
             return {}
         return {}
 
@@ -235,7 +273,7 @@ def run_repetition_test(segment_df, label_col: str | None = "label"):
     stats_df["conf_low"] = -np.inf
     stats_df["conf_high"] = stats_df["mean"] + t_crit * stats_df["se"]
 
-    if label_col is None:
+    if value_col is None:
         results = {}
         for _, row in stats_df.iterrows():
             seg_name = row["seg_name"]
@@ -255,7 +293,7 @@ def run_repetition_test(segment_df, label_col: str | None = "label"):
         return results
 
     results_by_label = {}
-    for label, label_stats_df in stats_df.groupby(label_col):
+    for label, label_stats_df in stats_df.groupby(value_col):
         label_results = {}
         for _, row in label_stats_df.iterrows():
             seg_name = row["seg_name"]
@@ -270,7 +308,7 @@ def run_repetition_test(segment_df, label_col: str | None = "label"):
                 ],
                 index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
             )
-            seg_res = res[(res[label_col] == label) & (res["seg_name"] == seg_name)].copy()
+            seg_res = res[(res[value_col] == label) & (res["seg_name"] == seg_name)].copy()
             label_results[seg_name] = (summary, seg_res)
         results_by_label[label] = label_results
 
@@ -344,7 +382,12 @@ def repetition_decrease(
     periode_frames : float,
     time_offset_frame : int = 0,
     normalize: bool = True,
+    repetition_mode: str = 'all',
+    exclude_segments = ['Z', 'Silence', 'End'],
+    merge_variations = False,
+    num_proc = None,
 ):
+    assert len(set(repetition_mode) - {'all', 'first', 'contiguous'}) == 0, f"Invalid repetition_mode: {repetition_mode}"
     labels = [col for col in model_outputs.column_names if col != "id"]
     annotation_names = [col for col in metadata_ds.column_names if col != "id"]
     try:
@@ -357,39 +400,31 @@ def repetition_decrease(
         metadata_ds = metadata_ds.cast(scheme)
     except Exception:
         raise ValueError(f"Error occurred while casting metadata_ds. Expected Dataset scheme:\n{scheme}.\nActual scheme:\n{metadata_ds.features}")
-    metadata_df = metadata_ds.to_pandas()
-    """Run repetition tests for many labels at once using pandas-vectorized stats."""
+    # metadata_df = metadata_ds.to_pandas()
+    ids_union = set(model_outputs["id"]).intersection(set(metadata_ds["id"]))
+    metadata_ds = metadata_ds.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
+    model_outputs = model_outputs.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
+    merged = concatenate_datasets([model_outputs.remove_columns(["id"]), metadata_ds], axis=1)
     if not labels:
         raise ValueError("labels must not be empty")
     available_columns = set(model_outputs.column_names)
     missing_cols = sorted({label for label in labels if label not in available_columns})
     if missing_cols:
         raise ValueError(f"Missing required columns in nll_dataset: {missing_cols}")
-    if normalize:
-        o = model_outputs.map(lambda *vals: {'sum': np.nansum(vals, axis=-1), 'counts': np.sum(~np.isnan(vals), axis=-1)}, input_columns=labels, remove_columns=model_outputs.column_names)
-        sums = np.sum(o['sum'], axis=0)
-        counts = np.sum(o['counts'], axis=0)
-        mean = sums/counts
-        # NOTE: possibly avoid overflow by extra computation step.
-        o = model_outputs.map(lambda *vals: {'sqsums': np.nansum((vals - mean[:, None])**2, axis=-1)}, input_columns=labels, remove_columns=model_outputs.column_names)
-        std = np.sqrt(np.sum(o['sqsums'], axis=0) / counts)
-        model_outputs = model_outputs.map(lambda *vals: {label: val for label, val in zip(labels, (vals - mean[:, None]) / std[:, None])}, remove_columns=labels, input_columns=labels)
-    merged = _merge_val_with_metadata(model_outputs, metadata_df)
-    merged_rows = merged.to_dict(orient="records")
-    segment_frames = []
-    for label in labels:
-        seg_df = _extract_segment_df_from_nll_dataset(
-            nll_dataset=merged_rows,
+
+    seg_df = _extract_segment_df_from_nll_dataset(
+            nll_dataset=merged,
             segment_names=annotation_names,
             period_frames=periode_frames,
-            value_column=label,
+            value_columns=labels,
             time_offset_frame=time_offset_frame,
+            normalize=normalize,
+            exclude_segments=exclude_segments,
+            merge_variations=merge_variations,
+            num_proc=num_proc,
         )
-        seg_df["label"] = label
-        segment_frames.append(seg_df)
-
-    all_segment_df = pd.concat(segment_frames, ignore_index=True)
-    return run_repetition_test(all_segment_df, label_col="label")
+        
+    return run_repetition_test(seg_df, value_col="value_column")
 
 if __name__ == "__main__":
     # labels = ["IC"]
