@@ -79,8 +79,8 @@ def _extract_segment_df_from_nll_dataset(
     nll_dataset : Dataset,
     segment_names: List[str],
     period_frames: float,
-    # value_column: str = "nll",
-    value_columns: List[str],
+    # midm_column: str = "nll",
+    midms: List[str],
     time_offset_frame: int = 0,
     normalize: bool = True,
     num_proc = None,
@@ -91,7 +91,7 @@ def _extract_segment_df_from_nll_dataset(
     Build a segment-level table equivalent to the logic used in eval.py.
 
     Expected row fields in nll_dataset:
-    - id, value_column, is_silence
+    - id, midm_column, is_silence
     - optional: noise_level
     - each segment name in segment_names with value dict or list[dict]
       containing start_sec, end_sec, type, optional anidx
@@ -102,7 +102,7 @@ def _extract_segment_df_from_nll_dataset(
         fn_kwargs=dict(
             segment_names=segment_names,
             period_frames=period_frames,
-            value_columns=value_columns,
+            midm_columns=midms,
             time_offset_frame=time_offset_frame,
             merge_variations=merge_variations
         ),
@@ -117,8 +117,8 @@ def _extract_segment_df_from_nll_dataset(
         ~segment_df["type"].astype(str).str.casefold().isin(exclude_segments_norm)
     ]
     if normalize:
-        for value_column in segment_df["value_column"].unique():
-            mask = segment_df["value_column"] == value_column
+        for midm_column in segment_df["midm_column"].unique():
+            mask = segment_df["midm_column"] == midm_column
             df = segment_df.loc[mask, ["numel", "mean", "welford"]]
             welford_state = reduce(welford_merge, zip(df["numel"], df["mean"], df["welford"]))
             mean = welford_state[1]
@@ -133,13 +133,13 @@ def _extract_segment_df_from_nll_dataset(
 
     return segment_df
 
-def _segment_agg_fn(ex, segment_names, period_frames, value_columns, time_offset_frame, merge_variations = False):
+def _segment_agg_fn(ex, segment_names, period_frames, midm_columns, time_offset_frame, merge_variations = False):
     outputs = []
-    for value_column in value_columns:
-        if value_column not in ex:
-            raise ValueError(f"Missing required field '{value_column}' in example")
+    for midm_column in midm_columns:
+        if midm_column not in ex:
+            raise ValueError(f"Missing required field '{midm_column}' in example")
 
-        nlls = np.asarray(ex[value_column])
+        nlls = np.asarray(ex[midm_column])
         if "is_silence" in ex:
             is_silence = np.asarray(ex["is_silence"], dtype=bool)
             nlls[is_silence] = np.nan
@@ -192,7 +192,7 @@ def _segment_agg_fn(ex, segment_names, period_frames, value_columns, time_offset
                     type_counts[type_] += 1
 
                     outputs.append( {
-                            "value_column": value_column,
+                            "midm_column": midm_column,
                             "id": ex["id"],
                             "seg_name": seg_name,
                             "anidx": segment.get("anidx", "-1"),
@@ -209,20 +209,24 @@ def _segment_agg_fn(ex, segment_names, period_frames, value_columns, time_offset
     return {'all_res': outputs}
 
 
-def run_repetition_test(segment_df, value_col: str | None = None):
+def run_repetition_test(
+    segment_df,
+    midm_column: str | None = None,
+    repetition_modes = [['all'], ['first'],],
+    ):
     """Vectorized repetition test with optional per-label results.
 
-    When value_col is None, behaves like the previous single-label function and
+    When midm_column is None, behaves like the previous single-label function and
     returns: dict[seg_name] -> (summary, residual_df).
 
-    When value_col is set, returns nested results:
+    When midm_column is set, returns nested results:
     dict[value] -> dict[seg_name] -> (summary, residual_df).
     """
     df = segment_df.copy()
 
     required_cols = {"id", "type", "nrep", "mean", "seg_name", "anidx"}
-    if value_col is not None:
-        required_cols.add(value_col)
+    if midm_column is not None:
+        required_cols.add(midm_column)
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"segment_df is missing required columns: {sorted(missing)}")
@@ -233,86 +237,71 @@ def run_repetition_test(segment_df, value_col: str | None = None):
     diff_group_cols = ["seg_name", "id", "type", "anidx"]
     agg_group_cols = ["seg_name"]
 
-    if value_col is not None:
-        sort_cols = [value_col] + sort_cols
-        diff_group_cols = [value_col] + diff_group_cols
-        agg_group_cols = [value_col] + agg_group_cols
+    if midm_column is not None:
+        sort_cols = [midm_column] + sort_cols
+        diff_group_cols = [midm_column] + diff_group_cols
+        agg_group_cols = [midm_column] + agg_group_cols
 
     df = df.sort_values(sort_cols)
     df["diff_val"] = df.groupby(diff_group_cols)["mean"].diff()
-    df = df.sort_values([value_col] + ["seg_name", "id", "anidx", "nseg"])
-    repetition_mode = ['contiguous', 'first']
+    df = df.sort_values([midm_column] + ["seg_name", "id", "anidx", "nseg"])
+    
+    dfs = []
+    for mode in repetition_modes:
+        mask = ~df["diff_val"].isna()
+        if not 'all' in mode:
+            if 'contiguous' in mode:
+                same_as_prev = df["type"].eq(df["type"].shift(1))
+                mask &= same_as_prev
+            if 'first' in mode:
+                # df.loc[df.nrep != 1, ['diff_val']] = np.nan
+                mask &= df.nrep == 1
+        # res = df.dropna(subset=["diff_val"]).copy()
+        res = df.loc[mask]
 
-    mask = ~df["diff_val"].isna()
-    if not 'all' in repetition_mode:
-        if 'contiguous' in repetition_mode:
-            same_as_prev = df["type"].eq(df["type"].shift(1))
-            mask &= same_as_prev
-        if 'first' in repetition_mode:
-            # df.loc[df.nrep != 1, ['diff_val']] = np.nan
-            mask &= df.nrep == 1
-    # res = df.dropna(subset=["diff_val"]).copy()
-    res = df.loc[mask]
+        grouped = res.groupby(agg_group_cols)["diff_val"]
+        stats_df = grouped.agg(["mean", "std", "count"]).reset_index()
+        stats_df["df"] = stats_df["count"] - 1
+        stats_df["se"] = stats_df["std"] / np.sqrt(stats_df["count"])
 
-    if res.empty:
-        if value_col is None:
-            return {}
-        return {}
+        with np.errstate(divide="ignore", invalid="ignore"):
+            stats_df["t_stat"] = stats_df["mean"] / stats_df["se"]
 
-    grouped = res.groupby(agg_group_cols)["diff_val"]
-    stats_df = grouped.agg(["mean", "std", "count"]).reset_index()
-    stats_df["df"] = stats_df["count"] - 1
-    stats_df["se"] = stats_df["std"] / np.sqrt(stats_df["count"])
+        # One-sided (less) p-value and confidence bound using t-distribution.
+        stats_df["p_value"] = scipy.stats.t.cdf(stats_df["t_stat"], df=stats_df["df"])
+        t_crit = scipy.stats.t.ppf(0.95, df=stats_df["df"])
+        stats_df["conf_low"] = -np.inf
+        stats_df["conf_high"] = stats_df["mean"] + t_crit * stats_df["se"]
+        stats_df['mode'] = ",".join(mode)
+        dfs.append(stats_df)
+    dfs = pd.concat(dfs, ignore_index=True)
+    dfs = dfs[ ['midm_column', 'mode', 'seg_name', 'mean', 'p_value']].sort_values(['midm_column', 'mode', 'seg_name'])
+    # d = (
+    #     dfs.loc[dfs["midm_column"].eq("ENTROPY"), ["mode", "seg_name", "mean"]]
+    #     .assign(
+    #         mode=lambda x: x["mode"].map({"all": "ALL", "first": "FI"}),
+    #         seg_name=lambda x: x["seg_name"].map(
+    #             {"functions": "Func.", "uppercase": "Upper.", "lowercase": "Lower."}
+    #         ),
+    #         row=r"$\mathcal{H}$",
+    #     )
+    # )
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        stats_df["t_stat"] = stats_df["mean"] / stats_df["se"]
+    # # Segment -> Mode (only Δ)
+    # wide = (
+    #     d.pivot(index="row", columns=["seg_name", "mode"], values="mean")
+    #     .reindex(columns=pd.MultiIndex.from_product([["Func.", "Upper.", "Lower."], ["ALL", "FI"]]))
+    # )
 
-    # One-sided (less) p-value and confidence bound using t-distribution.
-    stats_df["p_value"] = scipy.stats.t.cdf(stats_df["t_stat"], df=stats_df["df"])
-    t_crit = scipy.stats.t.ppf(0.95, df=stats_df["df"])
-    stats_df["conf_low"] = -np.inf
-    stats_df["conf_high"] = stats_df["mean"] + t_crit * stats_df["se"]
+    # latex = wide.to_latex(
+    #     escape=False,
+    #     multicolumn=True,
+    #     multirow=True,
+    #     float_format=lambda x: f"{x:.3f}".replace("0.", "."),  # 2 decimals + decimal comma
+    # )
 
-    if value_col is None:
-        results = {}
-        for _, row in stats_df.iterrows():
-            seg_name = row["seg_name"]
-            summary = pd.Series(
-                [
-                    row["mean"],
-                    row["t_stat"],
-                    row["p_value"],
-                    row["df"],
-                    row["conf_low"],
-                    row["conf_high"],
-                ],
-                index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
-            )
-            seg_res = res[res["seg_name"] == seg_name].copy()
-            results[seg_name] = (summary, seg_res)
-        return results
-
-    results_by_label = {}
-    for label, label_stats_df in stats_df.groupby(value_col):
-        label_results = {}
-        for _, row in label_stats_df.iterrows():
-            seg_name = row["seg_name"]
-            summary = pd.Series(
-                [
-                    row["mean"],
-                    row["t_stat"],
-                    row["p_value"],
-                    row["df"],
-                    row["conf_low"],
-                    row["conf_high"],
-                ],
-                index=["mean", "t_stat", "p_value", "df", "conf_low", "conf_high"],
-            )
-            seg_res = res[(res[value_col] == label) & (res["seg_name"] == seg_name)].copy()
-            label_results[seg_name] = (summary, seg_res)
-        results_by_label[label] = label_results
-
-    return results_by_label
+    # print(latex)
+    return dfs
 
 def _load_nll_csvs_as_rows(csv_paths) -> list:
     rows = []
@@ -382,12 +371,11 @@ def repetition_decrease(
     periode_frames : float,
     time_offset_frame : int = 0,
     normalize: bool = True,
-    repetition_mode: str = 'all',
-    exclude_segments = ['Z', 'Silence', 'End'],
+    exclude_segments = ['Z', 'Silence', 'End', 'no_function'],
     merge_variations = False,
     num_proc = None,
+    repetition_modes = [['all'], ['first'],],
 ):
-    assert len(set(repetition_mode) - {'all', 'first', 'contiguous'}) == 0, f"Invalid repetition_mode: {repetition_mode}"
     labels = [col for col in model_outputs.column_names if col != "id"]
     annotation_names = [col for col in metadata_ds.column_names if col != "id"]
     try:
@@ -416,7 +404,7 @@ def repetition_decrease(
             nll_dataset=merged,
             segment_names=annotation_names,
             period_frames=periode_frames,
-            value_columns=labels,
+            midms=labels,
             time_offset_frame=time_offset_frame,
             normalize=normalize,
             exclude_segments=exclude_segments,
@@ -424,7 +412,7 @@ def repetition_decrease(
             num_proc=num_proc,
         )
         
-    return run_repetition_test(seg_df, value_col="value_column")
+    return run_repetition_test(seg_df, midm_column="midm_column", repetition_modes=repetition_modes)
 
 if __name__ == "__main__":
     # labels = ["IC"]
