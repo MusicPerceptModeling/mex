@@ -36,7 +36,7 @@ import pandas as pd
 #TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
 #NB: Giorgia didn't use banded_regularization #TO DO differentiate depending on the analysis : use banded reg for EEG channels, use standard reg for arousal ?
 #TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
-#TO DO : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
+#TO DO (DONE) : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
 
 
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
@@ -533,10 +533,10 @@ def plot_group_behavioral_weights(all_weights: list, fs: float, tmin: float, tma
 #######################################################################################################################
 #quality evaluation :
 
-def plot_ica_diagnostics(raw_before, ica, subj_id):
+def plot_ica_diagnostics(raw_before, ica, subj_id, outdir="results"):
     raw_eeg_only = raw_before.copy().pick(picks='eeg')
     
-    diag_dir = f"results/diagnostics/{subj_id}"
+    diag_dir = f"{outdir}/diagnostics/{subj_id}"
     os.makedirs(diag_dir, exist_ok=True)
 
     # 1. Plot ICA Sources (Time courses)
@@ -708,7 +708,7 @@ def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently
     # axis=0 standardizes across the time dimension for each channel independently
     return zscore(eeg_matrix, axis=0) 
 
-def clean_eeg_mne_object(raw, subj_id):
+def clean_eeg_mne_object(raw, subj_id, outdir="results"):
     clean_raw = raw.copy()
 
     #labelling technical channels
@@ -759,7 +759,7 @@ def clean_eeg_mne_object(raw, subj_id):
     print(f"    -> ICA: Ousting {len(ica.exclude)} components.")
 
     #diagnostic plots 
-    plot_ica_diagnostics(clean_raw, ica, subj_id)
+    plot_ica_diagnostics(clean_raw, ica, subj_id, outdir=outdir)
 
     ica.apply(clean_raw, verbose=False)
     
@@ -770,20 +770,22 @@ def clean_eeg_mne_object(raw, subj_id):
 ############################################################################
 #specific to openneuro ds002725 :
 
-def decode_music_channel(voltage_value,feature_dir):
+def decode_music_channel(voltage_value, feature_dir):
     """
     Decodes the voltage from the 'music' channel into the stimuli filename.
     """
-        
     number = int(round(voltage_value * 10**6 * 20))
-    str_num = str(number)
+    
+    #strict matching by looking for "p3_" or "file_p3_" at the very start to AVOID GETTING CONFUSED BY THE op32 for instance !!!!!
+    target_new = f"p{number}_"
+    target_old = f"file_p{number}_"
     
     for f in os.listdir(feature_dir):
-        if "p"+str_num in f :
-            print(f)
+        if f.startswith(target_new) or f.startswith(target_old):
             return f
-    else:
-        print("Unknown track"+str_num)
+            
+    print(f"Unknown track {number}")
+    return None
 
 def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7):
     """
@@ -850,9 +852,13 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
         # independent time vectors based on their specific sampling rates
         env_time = np.arange(len(env_data)) * env_dt
         ic_time = np.arange(len(ic_data)) * ic_dt
+
+        print(f"  [DEBUG] Calculated Env length: {env_time[-1]:.2f} seconds")
+        print(f"  [DEBUG] Calculated IC length: {ic_time[-1]:.2f} seconds")
         
         # maximum duration in seconds to know how many EEG samples to fill
         max_duration_sec = max(env_time[-1], ic_time[-1]) if len(env_time)>0 and len(ic_time)>0 else 0
+        #max_duration_sec = env_time[-1] if len(env_time) > 0 else 0
         n_eeg_samples = int(np.ceil(max_duration_sec * eeg_fs))
         eeg_time = np.arange(n_eeg_samples) / eeg_fs
         
@@ -886,7 +892,7 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
 
 
 
-def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7, use_banded=False):
+def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7, use_banded=False, outdir="results"):
     """
     Loops through an OpenNeuro BIDS dataset, aligns data, runs Banded TRF, 
     and computes robust group-level non-parametric summary statistics.
@@ -914,6 +920,8 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
     
     behav_channel_names = ['ft_valance', 'ft_arousal']
 
+    cpt_flat_chunks=0
+
     for subj_path in subject_folders:
         subj_id = os.path.basename(subj_path)
         print(f"\n=============================")
@@ -940,7 +948,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 eeg_fs = raw.info['sfreq']
             
             try:
-                clean_raw = clean_eeg_mne_object(raw, subj_id)
+                clean_raw = clean_eeg_mne_object(raw, subj_id, outdir)
                     
                 #updating eeg_fs to the new resampled rate
                 eeg_fs = clean_raw.info['sfreq']
@@ -974,9 +982,12 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
 
                 #chunking for "data augmentation" 
                 valid_indices = np.where(aligned_stim[:, 0] > 0)[0]
+                #valid_indices = np.where(aligned_stim[:, 0] > -1)[0]
                 if len(valid_indices) == 0:
                     continue
-                    
+
+                #gap_tolerance_samples = int(5.0 * eeg_fs) 
+                #split_points = np.where(np.diff(valid_indices) > gap_tolerance_samples)[0] + 1
                 split_points = np.where(np.diff(valid_indices) > 1)[0] + 1
                 valid_blocks = np.split(valid_indices, split_points)
                 
@@ -991,25 +1002,29 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                                 raw_chunk_stim = aligned_stim[chunk_idx, :]
                                 raw_chunk_eeg = raw_eeg_trial[chunk_idx, :]
                                 
-                                
-                                #if np.any(np.std(raw_chunk_stim, axis=0) == 0):
-                                #    continue
-                                #checking variance only on EEG 
+                                #checking if EEG has flatlined
                                 if np.any(np.std(raw_chunk_eeg, axis=0) == 0):
                                     continue
+                                    
+                                #checking is the acoustic envelope has flatlined
+                                if np.std(raw_chunk_stim[:, 0]) == 0:
+                                    continue
                                 
-                                #standardize and store
-                                stimuli_list.append(zscore(raw_chunk_stim, axis=0))
-                                eeg_list.append(zscore(raw_chunk_eeg, axis=0))
+                                #scipy's zscore turns flat columns into NaNs. np.nan_to_num catches those NaNs and converts them to 0.0
+                                clean_stim = np.nan_to_num(zscore(raw_chunk_stim, axis=0), nan=0.0)
+                                ic_variance = np.var(clean_stim[:, 1])
+                                if ic_variance == 0.0:
+                                    cpt_flat_chunks+=1
+                                    print(f"  [DEBUG] IC column flatlined! This is the {cpt_flat_chunks}th we lose this way.")
+                                clean_eeg = np.nan_to_num(zscore(raw_chunk_eeg, axis=0), nan=0.0)
+
+                                stimuli_list.append(clean_stim)
+                                eeg_list.append(clean_eeg)
 
                                 if raw_behav_trial is not None:
                                     raw_chunk_behav = raw_behav_trial[chunk_idx, :]
-                                    #if the user didn't move the joystick, adding a tiny bit of noise so zscore doesn't return NaNs
-                                    if np.any(np.std(raw_chunk_behav, axis=0) == 0):
-                                        print(f"user {subj_id} didn't move the joystick in a 30sec chunk from {edf_file}, adding noise to avoid NaNs")
-                                        raw_chunk_behav += np.random.normal(0, 1e-8, raw_chunk_behav.shape)
-                                    behav_list.append(zscore(raw_chunk_behav, axis=0))
-                                
+                                    clean_behav = np.nan_to_num(zscore(raw_chunk_behav, axis=0), nan=0.0)
+                                    behav_list.append(clean_behav)
             except ValueError as e:
                 print(f"  [!] {e} Skipping EDF.")
                 continue
@@ -1035,7 +1050,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
             valid_eeg_names = [channel_names[i] for i in eeg_indices]
             scalp_scores = delta_z[eeg_indices]
 
-            os.makedirs("results", exist_ok=True)
+            os.makedirs(outdir, exist_ok=True)
 
             fig = plot_static_score_topomap(
                 scores=scalp_scores, 
@@ -1045,7 +1060,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 cmap="Reds",
                 vmin=0.0  
             )
-            fig.savefig(f"results/topomap_{subj_id}_delta_z.png", dpi=300)
+            fig.savefig(f"{outdir}/topomap_{subj_id}_delta_z.png", dpi=300)
             plt.close(fig)
 
             if behav_list:
@@ -1091,7 +1106,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                     tmax=1.0,         # Matched to compare_direct_models
                     subj_id=subj_id
                 )
-                fig_behav.savefig(f"results/arousal_weights_{subj_id}.png", dpi=300)
+                fig_behav.savefig(f"{outdir}/arousal_weights_{subj_id}.png", dpi=300)
                 plt.close(fig_behav)
 
                 subj_arousal_weights = behav_trf.weights[1, :, 1]
@@ -1155,7 +1170,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 feature_name="Information Content (IC)",
                 times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] 
             )
-            fig.savefig(f"results/topomap_{subj_id}_IC_weights.png", dpi=300)
+            fig.savefig(f"{outdir}/topomap_{subj_id}_IC_weights.png", dpi=300)
             plt.close(fig)
 
         except Exception as e:
@@ -1331,9 +1346,9 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 tmin=-0.1, 
                 tmax=0.7
             )
-            fig_group_behav.savefig("results/group_level_arousal_weights.png", dpi=300)
+            fig_group_behav.savefig(f"{outdir}/group_level_arousal_weights.png", dpi=300)
             plt.close(fig_group_behav)
-            print("Saved group-level behavioral plot to results/group_level_arousal_weights.png")
+            print(f"Saved group-level behavioral plot to {outdir}/group_level_arousal_weights.png")
             
     #adding behavioral results to the final return dictionary
     return {
@@ -1354,49 +1369,67 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
 #################################################################################################################################################################
 #SONG dataset treatment
 
-def prepare_song_trial(eeg_matrix, env_path, ic_csv_path, eeg_fs, env_dt=0.015625, ic_dt=None):
+def prepare_song_trial(eeg_matrix, env_path, ic_path, eeg_fs, env_dt=0.015625, ic_dt=0.7):
     """
-    Takes the pre-cut EEG matrix, loads the standalone Envelope (.npy) and IC (.csv), 
+    Takes the pre-cut EEG matrix, loads the standalone Envelope (.npy) and IC (.csv OR .npy), 
     and perfectly aligns everything to the EEG sampling rate.
     """
-    # Information Content from the CSV properly
-    ic_df = pd.read_csv(ic_csv_path)
-    ic_time = ic_df['time'].values
-    
-
-    # We use .fillna(0.0) to turn the empty spaces between notes into zeros.
-    # for testing Entropy instead, just need to change 'nll_0.000' to 'entr_0.000'
-    ic_data = ic_df['nll_0.000'].fillna(0.0).values
-    
-    #acoustic envelope
+    # 1. Load Acoustic Envelope (always .npy)
     env_data = np.squeeze(np.load(env_path))
-    #time vectors
+    env_time = np.arange(len(env_data)) * env_dt
+    
     eeg_length = eeg_matrix.shape[0]
     eeg_time = np.arange(eeg_length) / eeg_fs
     
-    env_time = np.arange(len(env_data)) * env_dt
+    # 2. Auto-Detect and Load Information Content (IC)
+    if ic_path.endswith('.csv'):
+        # CSV FORMAT 
+        ic_df = pd.read_csv(ic_path)
+        ic_time = ic_df['time'].values
+        ic_data = ic_df['nll_0.000'].fillna(0.0).values
+        #linear interpolation 
+        ic_interpolator = interp1d(ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0)
+        
+    elif ic_path.endswith('.npy'):
+        #NPY FORMAT
+        ic_data = np.squeeze(np.load(ic_path))
+        ic_time = np.arange(len(ic_data)) * ic_dt
+        ic_interpolator = interp1d(ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0)
+        
+    else:
+        raise ValueError(f"Unsupported IC file format: {ic_path}. Must be .csv or .npy")
+
+    #aligning the time series
+    ic_aligned = ic_interpolator(eeg_time)
     
-    #interpolate IC using the CSV's explicit time vector
-    ic_interpolator = interp1d(ic_time, ic_data, kind='linear', bounds_error=False, fill_value=0.0)
-    ic_aligned = ic_interpolator(eeg_time)#TO DO decide between linear and previous interpolation methods
-    
-    #interpolate envelope
     env_interpolator = interp1d(env_time, env_data, kind='linear', bounds_error=False, fill_value=0.0)
     env_aligned = env_interpolator(eeg_time)
     
-    #combine acoustic envelope and IC into one stimulus matrix
+    #combining and Z-scoring
     aligned_stim = np.column_stack((env_aligned, ic_aligned))
-    
-    #Z-score both the stimulus and the EEG to remove baseline biases
     clean_stim = np.nan_to_num(zscore(aligned_stim, axis=0))
     clean_eeg = np.nan_to_num(zscore(eeg_matrix, axis=0))
     
     return clean_stim, clean_eeg
 
-def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.015625, ic_dt=0.7, use_banded=False):
+
+def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.015625, ic_dt=0.7, use_banded=False, outdir="results"):
     
     mat_files = sorted(glob.glob(os.path.join(mat_dir, "pre_dataSub*.mat")))
-    csv_files = sorted(glob.glob(os.path.join(csv_dir, "ic_*_song.csv")))
+    if not mat_files:
+        raise FileNotFoundError(f"No matching .mat files found in '{mat_dir}'.")
+    
+    csv_files = sorted(
+        glob.glob(os.path.join(csv_dir, "ic_*_song.csv")) + 
+        glob.glob(os.path.join(csv_dir, "*_song.npy"))
+    )
+
+    print(mat_files)
+    #print(env_dir)
+    print(csv_files)
+    
+    if not csv_files:
+        raise FileNotFoundError(f"No matching IC files (.csv or .npy) found in '{csv_dir}'.")
     
     all_delta_z = []
     all_z_base = []
@@ -1424,12 +1457,15 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
         eeg_trials = eeg_struct['data'][0]
         
-        # extracting channel names from the MATLAB struct on the first pass!
+        # extracting channel names from the MATLAB struct on the first pass
         if channel_names is None:
-            # chanlocs is usually a structured array where 'labels' holds the name
+            # chanlocs is a structured array where 'labels' holds the name
             chanlocs = eeg_struct['chanlocs'][0]
             channel_names = [ch['labels'][0] for ch in chanlocs]
             print(f"    -> Extracted {len(channel_names)} channels from MAT file.")
+
+            eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
+            valid_eeg_names = [channel_names[i] for i in eeg_indices]
         
         eeg_list = []
         stimuli_list = []
@@ -1455,23 +1491,22 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             if trial_eeg.shape[0] < trial_eeg.shape[1]:
                 trial_eeg = trial_eeg.T
                 
-            current_csv_path = csv_files[trial_idx]
+            current_ic_path = csv_files[trial_idx]
+            ic_filename = os.path.basename(current_ic_path)
             
-            # file matching between envelope and ic
-            csv_filename = os.path.basename(current_csv_path)
-            env_filename = csv_filename.replace('ic_', '').replace('.csv', '.npy')
+            # dynamically removing 'ic_' and whatever the file extension is (.csv or .npy)
+            base_name = ic_filename.replace('ic_', '').rsplit('.', 1)[0]
+            env_filename = base_name + '.npy' 
             env_path = os.path.join(env_dir, env_filename)
             
             if not os.path.exists(env_path):
                 print(f"  [!] Warning: Envelope {env_filename} not found. Skipping trial.")
                 continue
-            # --------------------------------
-            
-            #prepare and align
+                
             clean_stim, clean_eeg = prepare_song_trial(
                 eeg_matrix=trial_eeg, 
                 env_path=env_path, 
-                ic_csv_path=current_csv_path, 
+                ic_path=current_ic_path, 
                 eeg_fs=eeg_fs, 
                 env_dt=env_dt,
                 ic_dt=ic_dt 
@@ -1479,13 +1514,15 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
             stimuli_list.append(clean_stim)
             eeg_list.append(clean_eeg)
+
+           
             
         if not stimuli_list:
             continue
             
         # TRF Cross-Validation
         print(f"  -> Fitting direct models for {subj_id} on {len(stimuli_list)} epochs...")
-        z_full, z_base, delta_z, opt_lam = compare_direct_models(stimuli_list, eeg_list, eeg_fs, use_banded=use_banded)
+        z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs, use_banded=use_banded)
         
         delta_z = np.nan_to_num(delta_z, nan=0.0)
         z_base = np.nan_to_num(z_base, nan=0.0)
@@ -1499,7 +1536,7 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
         final_trf = TRF(direction=1)
             
-        # If we used banded, pass the bands argument. Otherwise, standard.
+        # passing the bands argument if bqnded was used. Otherwise, standard.
         if isinstance(opt_lambda_full, list):
             final_trf.train(
                 stimuli_list, # Passing the list directly!
@@ -1534,7 +1571,7 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             feature_name="Information Content (IC)",
             times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] 
         )
-        fig.savefig(f"results/topomap_song_{subj_id}_IC_weights.png", dpi=300)
+        fig.savefig(f"{outdir}/topomap_song_{subj_id}_IC_weights.png", dpi=300)
         plt.close(fig)
         # ------------------------------------------------------------------
         
@@ -1645,17 +1682,22 @@ if __name__ == "__main__":
 
     # OpenNeuro paths
     parser.add_argument('--bids_dir', type=str, default="ds002725", help="Path to OpenNeuro BIDS directory")
-    parser.add_argument('--env_dir', type=str, default="enveloppe_of_stimuli", help="Path to envelope npy files of audio stimuli")
-    parser.add_argument('--ic_dir', type=str, default="ic_curves_global_stimuli", help="Path to IC npy files of audio stimuli")
+    #parser.add_argument('--env_dir', type=str, default="enveloppe_of_stimuli", help="Path to envelope npy files of audio stimuli")
+    #parser.add_argument('--ic_dir', type=str, default="ic_curves_global_stimuli", help="Path to IC npy files of audio stimuli")
+    parser.add_argument('--env_dir', type=str, default="openneuro_envelopes", help="Path to envelope npy files of audio stimuli")
+    parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/ds002775-classical_pa-audioic_ic_0.0-0.3-0.5/noise_0.5", help="Path to IC npy files of audio stimuli")
+    #parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/ds002775-classical_audioic_ic", help="Path to IC npy files of audio stimuli")
+    
     
     # SONG dataset paths
-    parser.add_argument('--mat_dir', type=str, default="song_data_mat", help="Path to SONG .mat files")
-    parser.add_argument('--csv_dir', type=str, default="../Giorgia_data/features/ic_neurips/aligned", help="Path to SONG .csv ic files")
+    parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
+    #parser.add_argument('--csv_dir', type=str, default="../Giorgia_data/features/ic_neurips/aligned", help="Path to SONG .csv ic files")
     parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
+    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0.5", help="Path to SONG ic files")
     
     #adding the time-step parameters to the parser
-    parser.add_argument('--env_dt', type=float, default=0.015625, help="Time step for the acoustic envelope (e.g., 1/64)")
-    parser.add_argument('--ic_dt', type=float, default=0.7, help="Time step for the Information Content")
+    parser.add_argument('--env_dt', type=float, default=0.015625, help="Time step for the acoustic envelope (e.g., 1/64)") # default=0.015625 for the envelopes of the song dataset is indeed this one (64Hz) whereas for openneuro, we need to use --env_dt=0.004 (250Hz) 
+    parser.add_argument('--ic_dt', type=float, default=0.0928798, help="Time step for the Information Content") # default for my own (old, from this summer) IC curves is 0.7
 
     #potential banded regularization
     parser.add_argument('--banded', action='store_true', help="Use Banded Ridge Regularization for the Full Model")
@@ -1663,19 +1705,24 @@ if __name__ == "__main__":
     #parsing arguments from the terminal
     args = parser.parse_args()
 
-    #creating results folder if it doesn't exist
-    os.makedirs("results", exist_ok=True)
-
     # ==========================================
     # BRANCH 1: OpenNeuro ds002725
     # ==========================================
     if args.dataset == 'openneuro':
+
+        #creating results folder if it doesn't exist
         print("\n=== Launching OpenNeuro Pipeline ===")
+        outdir="results_openneuro_"+args.ic_dir.split("/")[-1]
+        
+        os.makedirs(outdir, exist_ok=True)
         results = run_openneuro_dataset_analysis(
             bids_root_dir=args.bids_dir, 
             env_dir=args.env_dir, 
             ic_dir=args.ic_dir,
-            use_banded=args.banded
+            env_dt=args.env_dt,
+            ic_dt=args.ic_dt,
+            use_banded=args.banded,
+            outdir=outdir
         )
         
         fig = plot_group_level_topomap(
@@ -1686,8 +1733,8 @@ if __name__ == "__main__":
             cmap="Reds",
             vmin=0.0
         )
-        fig.savefig("results/group_level_enhancement_openneuro.png", dpi=300)
-        print("Saved OpenNeuro topomap to results/group_level_enhancement_openneuro.png")
+        fig.savefig(outdir+"/group_level_enhancement_openneuro.png", dpi=300)
+        print(f"Saved OpenNeuro topomap to {outdir}/group_level_enhancement_openneuro.png")
 
         raw_p_vals = results["p_values_raw"]
         ch_names = results["channel_names"]
@@ -1707,6 +1754,11 @@ if __name__ == "__main__":
     # BRANCH 2: SONG Dataset
     # ==========================================
     elif args.dataset == 'song':
+
+        #creating results folder if it doesn't exist
+        print("\n=== Launching OpenNeuro Pipeline ===")
+        outdir="results_song_"+args.csv_dir.split("/")[-1]
+        os.makedirs(outdir, exist_ok=True)
         print("\n=== Launching SONG Dataset Pipeline ===")
         
         results = run_song_dataset_analysis(
@@ -1716,7 +1768,8 @@ if __name__ == "__main__":
             eeg_fs=64,
             env_dt=args.env_dt,  
             ic_dt=args.ic_dt,
-            use_banded=args.banded
+            use_banded=args.banded,
+            outdir=outdir
         )
         
         fig = plot_group_level_topomap(
@@ -1727,5 +1780,5 @@ if __name__ == "__main__":
             cmap="Reds",
             vmin=0.0
         )
-        fig.savefig("results/group_level_enhancement_song.png", dpi=300)
-        print("Saved SONG topomap to results/group_level_enhancement_song.png")
+        fig.savefig(outdir+"/group_level_enhancement_song.png", dpi=300)
+        print(f"Saved SONG topomap to {outdir}/group_level_enhancement_song.png")
