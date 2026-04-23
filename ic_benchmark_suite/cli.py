@@ -1,6 +1,6 @@
 from pathlib import Path
 import re
-from typing import Callable
+from typing import Callable, List
 
 from jsonargparse import CLI
 from dataclasses import dataclass
@@ -56,8 +56,15 @@ class BenchmarkSuite:
             ic_ds = model.entropy(audio_ds)
         self.dataset_provider.persist_ds(ic_ds, ds_name=cache_name, hub_upload=hub_upload)
 
-    def benchmark(self, task: str, cache_model: str, ds_name: str, task_kwargs: dict = {}):
-        model_outputs = self.dataset_provider.get_ds(cache_model)
+    def benchmark(self, task: str, cache_model: str | List[str], ds_name: str, task_kwargs: dict = {}):
+        
+        if isinstance(cache_model, str):
+            model_outputs = self.dataset_provider.get_ds(cache_model)
+        else:
+            model_outputs = [self.dataset_provider.get_ds(cache_model[0])]
+            for cm in cache_model[1:]:
+                model_outputs.append(self.dataset_provider.get_ds(cm).remove_columns(['Time', 'id'])) # TODO: remove
+            model_outputs = datasets.concatenate_datasets(model_outputs, axis=1)
         task_ds = self.dataset_provider.get_ds(ds_name)
         if task == 'idyom-consistency':
             try:

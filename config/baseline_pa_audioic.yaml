@@ -1,13 +1,14 @@
 baseline:
   model:
     class_path: ic_benchmark_suite.baseline.pa_audioic.PAAudioIC
-    # init_args:
-    #   monte_carlo_samples: 32
-    #   integration_params:
-    #     n_runs: 1
-
+    init_args:
+      noise_levels: [0.0, 0.3, 0.5]
+      monte_carlo_samples: 32
+      integration_params:
+        n_runs: 1
   audio_ds: cache/datasets/session_ds_entropy
-  cache_name: cache/metrics/session_pa_audioic_ic
-  # cache_name: cache/metrics/pa_audioic_entropy_mc32_nruns1
-  # val: 'entropy'
+  # val: 'ic'
+  # cache_name: cache/metrics/session_pa-audioic_ic-0.0-0.3-0.5
+  val: 'entropy'
+  cache_name: 'cache/metrics/session_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5'
   hub_upload: false
