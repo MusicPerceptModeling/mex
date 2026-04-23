@@ -45,7 +45,7 @@ def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     return np.arctanh(r_clipped)
 
 def compare_direct_models(stimuli_list, eeg_list, fs, use_banded=False):
-    tmin, tmax = -0.1, 1.0 
+    tmin, tmax = -0.1, 0.7 
     k_folds = -1  
     regularization = np.logspace(-1, 6, 8) 
     trf = TRF(direction=1)
@@ -283,7 +283,7 @@ def evaluate_with_mismatched_epochs(stimuli_list, target_list, fs, opt_lambda_fu
     Creates a null distribution by shuffling only the IC feature across epochs, 
     keeping the acoustic Envelope perfectly matched to the EEG to isolate IC impact.
     """
-    tmin, tmax = -0.1, 1.0
+    tmin, tmax = -0.1, 0.7
     k_folds = -1
     n_channels = target_list[0].shape[1]
     n_epochs = len(stimuli_list)
@@ -1145,11 +1145,11 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 # Check if opt_lambda_b is banded (a list/array) or standard (a scalar)
                 if isinstance(opt_lambda_b, (list, np.ndarray)):
                     behav_trf.train(
-                        stimuli_list,  # Passing the python list directly!
-                        behav_list,    # Passing the python list directly!
+                        stimuli_list,  
+                        behav_list,    
                         eeg_fs, 
                         tmin=-0.1, 
-                        tmax=1.0,      # Matched to compare_direct_models
+                        tmax=0.7,      
                         regularization=opt_lambda_b,
                         bands=[1, 1]
                     )
@@ -1159,7 +1159,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                         behav_list, 
                         eeg_fs, 
                         tmin=-0.1, 
-                        tmax=1.0,      # Matched to compare_direct_models
+                        tmax=0.7,      
                         regularization=opt_lambda_b
                     )
 
@@ -1167,7 +1167,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                     trf_model=behav_trf, 
                     fs=eeg_fs, 
                     tmin=-0.1, 
-                    tmax=1.0,         # Matched to compare_direct_models
+                    tmax=0.7,         
                     subj_id=subj_id
                 )
                 fig_behav.savefig(f"{outdir}/arousal_weights_{subj_id}.png", dpi=300)
@@ -1195,7 +1195,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                 method='banded'                 
             )"""
             
-            #fitting one final full model for each subject on all trials to get the weights for each lag 
+            #fitting one final full model for each subject on all trials for each channel to get the weights for each lag 
             print(f"  -> Fitting final full model to extract weights")
             
             final_trf = TRF(direction=1)
@@ -1203,11 +1203,11 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
             # If we used banded, pass the bands argument. Otherwise, standard.
             if isinstance(opt_lambda_full, list):
                 final_trf.train(
-                    stimuli_list, # Passing the list directly!
+                    stimuli_list, 
                     eeg_list, 
                     eeg_fs, 
                     tmin=-0.1, 
-                    tmax=1.0, 
+                    tmax=0.7, 
                     regularization=opt_lambda_full,
                     bands=[1, 1]
                 )
@@ -1217,7 +1217,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
                     eeg_list, 
                     eeg_fs, 
                     tmin=-0.1, 
-                    tmax=1.0, 
+                    tmax=0.7, 
                     regularization=opt_lambda_full
                 )
 
@@ -1476,260 +1476,9 @@ def prepare_song_trial(eeg_matrix, env_path, ic_path, eeg_fs, env_dt=0.015625, i
     
     return clean_stim, clean_eeg
 
-"""
-def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.015625, ic_dt=0.7, use_banded=False, outdir="results"):
-    
-    mat_files = sorted(glob.glob(os.path.join(mat_dir, "pre_dataSub*.mat")))
-    if not mat_files:
-        raise FileNotFoundError(f"No matching .mat files found in '{mat_dir}'.")
-    
-    csv_files = sorted(
-        glob.glob(os.path.join(csv_dir, "ic_*_song.csv")) + 
-        glob.glob(os.path.join(csv_dir, "*_song.npy"))
-    )
 
-    print(mat_files)
-    #print(env_dir)
-    print(csv_files)
-    
-    if not csv_files:
-        raise FileNotFoundError(f"No matching IC files (.csv or .npy) found in '{csv_dir}'.")
-    
-    all_delta_z = []
-    all_z_base = []
-    
-    channel_names = None
+ 
 
-    eeg_only_names = [
-        'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
-        'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
-        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
-    ]
-    
-    for mat_file in mat_files:
-        subj_id = os.path.basename(mat_file).split('.')[0]
-        print(f"\n=============================")
-        print(f" Processing {subj_id}...")
-        
-        #loading preprocessed subject data
-        mat_data = sio.loadmat(mat_file)
-        eeg_struct = mat_data['eeg'][0, 0]
-        
-        trial_fs = int(eeg_struct['fs'].item())
-        if eeg_fs is None:
-            eeg_fs = trial_fs
-            
-        eeg_trials = eeg_struct['data'][0]
-        
-        # extracting channel names from the MATLAB struct on the first pass
-        if channel_names is None:
-            # chanlocs is a structured array where 'labels' holds the name
-            chanlocs = eeg_struct['chanlocs'][0]
-            channel_names = [ch['labels'][0] for ch in chanlocs]
-            print(f"    -> Extracted {len(channel_names)} channels from MAT file.")
-
-            eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
-            valid_eeg_names = [channel_names[i] for i in eeg_indices]
-        
-        eeg_list = []
-        stimuli_list = []
-        
-        # TO DO: generalise if needed - for now this strictly assumes eeg_trials[0] is ic_01_song, eeg_trials[1] is ic_02_song, etc.
-        for trial_idx in range(len(csv_files)):
-            
-            # extract the raw EEG array from the MATLAB cell
-            trial_eeg = eeg_trials[trial_idx] 
-            
-            # safely catch and skip empty MATLAB arrays (e.g., rejected trials)
-            if trial_eeg.size == 0 or max(trial_eeg.shape) < (eeg_fs * 2):
-                print(f"  [!] Warning: Trial {trial_idx} is empty or too short (< 2s). Skipping.")
-                continue
-                
-            # squeeze out any hidden MATLAB cell dimensions
-            trial_eeg = np.squeeze(trial_eeg)
-            if len(trial_eeg.shape) < 2:
-                print(f"  [!] Warning: Trial {trial_idx} has invalid dimensions. Skipping.")
-                continue
-                
-            # transpose to (time, channels) if necessary
-            if trial_eeg.shape[0] < trial_eeg.shape[1]:
-                trial_eeg = trial_eeg.T
-                
-            current_ic_path = csv_files[trial_idx]
-            ic_filename = os.path.basename(current_ic_path)
-            
-            # dynamically removing 'ic_' and whatever the file extension is (.csv or .npy)
-            base_name = ic_filename.replace('ic_', '').rsplit('.', 1)[0]
-            env_filename = base_name + '.npy' 
-            env_path = os.path.join(env_dir, env_filename)
-            
-            if not os.path.exists(env_path):
-                print(f"  [!] Warning: Envelope {env_filename} not found. Skipping trial.")
-                continue
-                
-            clean_stim, clean_eeg = prepare_song_trial(
-                eeg_matrix=trial_eeg, 
-                env_path=env_path, 
-                ic_path=current_ic_path, 
-                eeg_fs=eeg_fs, 
-                env_dt=env_dt,
-                ic_dt=ic_dt 
-            )
-            
-            stimuli_list.append(clean_stim)
-            eeg_list.append(clean_eeg)
-
-           
-            
-        if not stimuli_list:
-            continue
-            
-        # TRF Cross-Validation
-        print(f"  -> Fitting direct models for {subj_id} on {len(stimuli_list)} epochs...")
-        z_full, z_base, delta_z, opt_lambda_full = compare_direct_models(stimuli_list, eeg_list, eeg_fs, use_banded=use_banded)
-        
-        delta_z = np.nan_to_num(delta_z, nan=0.0)
-        z_base = np.nan_to_num(z_base, nan=0.0)
-        
-        all_delta_z.append(delta_z)
-        all_z_base.append(z_base)
-        print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
-        
-        #fitting one full model on all trials for each given subject to extract and plot SONG weights 
-        print(f"  -> Fitting final full model to extract weights")
-            
-        final_trf = TRF(direction=1)
-            
-        # passing the bands argument if bqnded was used. Otherwise, standard.
-        if isinstance(opt_lambda_full, list):
-            final_trf.train(
-                stimuli_list, # Passing the list directly!
-                eeg_list, 
-                eeg_fs, 
-                tmin=-0.1, 
-                tmax=1.0, 
-                regularization=opt_lambda_full,
-                bands=[1, 1]
-            )
-        else:
-            final_trf.train(
-                stimuli_list, 
-                eeg_list, 
-                eeg_fs, 
-                tmin=-0.1, 
-                tmax=1.0, 
-                regularization=opt_lambda_full
-            )
-
-        sliced_weights = final_trf.weights[:, :, eeg_indices]
-        final_trf.weights = sliced_weights
-
-        #plot and save
-        fig = plot_participant_trf_topomaps(
-            trf_model=final_trf,
-            ch_names=valid_eeg_names, 
-            fs=eeg_fs,
-            tmin=-0.1,
-            subj_id=subj_id,
-            feature_idx=1,
-            feature_name="Information Content (IC)",
-            times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6] 
-        )
-        fig.savefig(f"{outdir}/topomap_song_{subj_id}_IC_weights.png", dpi=300)
-        plt.close(fig)
-        # ------------------------------------------------------------------
-        
-        
-    # ====================================================================
-    # Group-Level Statistics 
-
-    print("\n==========================================")
-    print(" Computing Group-Level Statistics...")
-    print("==========================================")
-
-    eeg_indices = [channel_names.index(ch) for ch in eeg_only_names if ch in channel_names]
-    valid_eeg_names = [channel_names[i] for i in eeg_indices]
-    
-    #baseline predictions z-transformed pearson correlation coefficients 
-    group_z_base = np.stack(all_z_base, axis=0) 
-    
-    #subset to the 30 scalp electrodes
-    eeg_group_z_base = group_z_base[:, eeg_indices]
-    
-    mean_z_base = np.mean(eeg_group_z_base, axis=0)
-    std_z_base = np.std(eeg_group_z_base, axis=0)
-    
-    #non-parametric Jackknife testing on the 30 scalp electrodes
-    p_values_base = []
-    for ch in range(eeg_group_z_base.shape[1]):
-        try:
-            _, p = jackknife_ttest(eeg_group_z_base[:, ch], alternative='greater')
-        except Exception:
-            #fallback to standard Wilcoxon if jackknife fails
-            res = wilcoxon(eeg_group_z_base[:, ch], alternative='greater') 
-            p = res.pvalue
-        p_values_base.append(p)
-        
-    p_values_base = np.array(p_values_base)
-    
-    #FDR correction to the 30 valid p-values
-    reject_null_base, p_values_fdr_base = mne.stats.fdr_correction(p_values_base, alpha=0.05, method='indep')
-    significant_channels_base = np.where(reject_null_base)[0]
-    
-    print(f"Overall Mean Scalp Envelope Prediction (z_base): {np.mean(mean_z_base):.4f}")
-    print(f"Number of channels with significant envelope prediction: {len(significant_channels_base)} / {len(valid_eeg_names)}")
-    
-    if len(significant_channels_base) > 0:
-        print("\nSignificant Envelope Channels (FDR Corrected):")
-        for ch_idx in significant_channels_base:
-            print(f" - {valid_eeg_names[ch_idx]}: z_base = {mean_z_base[ch_idx]:.4f} (p = {p_values_fdr_base[ch_idx]:.4f})")
-
-            
-    #predicitve enhancement obtained from IC on each channel for all pariticpants
-    group_delta_z = np.stack(all_delta_z, axis=0) 
-    
-    #shape becomes (18 subjects, 30 channels)
-    eeg_group_delta_z = group_delta_z[:, eeg_indices]
-    
-    mean_delta_z = np.mean(eeg_group_delta_z, axis=0)
-    std_delta_z = np.std(eeg_group_delta_z, axis=0)
-
-    #non-parametric Jackknife testing on the 30 scalp electrodes
-    p_values = []
-    for ch in range(eeg_group_delta_z.shape[1]):
-        try:
-            _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
-        except Exception:
-            #Fallback to standard Wilcoxon if jackknife fails
-            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') #NB: a simple t test could also work but only if the normality condition is verified
-            p = res.pvalue
-        p_values.append(p)
-        
-    p_values = np.array(p_values)
-    
-    #FDR correction to the 30 valid p-values
-    reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
-    significant_channels = np.where(reject_null)[0]
-    
-    print(f"Total Subjects Processed: {eeg_group_delta_z.shape[0]}")
-    print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
-    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
-    
-    if len(significant_channels) > 0:
-        print("\nSignificant Channels (FDR Corrected):")
-        for ch_idx in significant_channels:
-            print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
-
-
-    return {
-        "mean_delta_z": mean_delta_z,
-        "std_delta_z": std_delta_z,
-        "p_values_raw": p_values,
-        "p_values_fdr": p_values_fdr,
-        "significant_mask": reject_null,
-        "channel_names": valid_eeg_names
-    }
-"""
 def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.015625, ic_dt=0.7, use_banded=False, n_perms=None, outdir="results"):
     
     mat_files = sorted(glob.glob(os.path.join(mat_dir, "pre_dataSub*.mat")))
@@ -1841,7 +1590,7 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
         all_z_base.append(z_base)
         print(f"[{subj_id}] Mean channel enhancement: {np.mean(delta_z):.4f}")
         
-        # --- ADDED: Participant level topomaps ---
+        # --- participant level topomaps ---
         scalp_scores = delta_z[eeg_indices]
         os.makedirs(outdir, exist_ok=True)
 
@@ -1862,12 +1611,12 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
         if isinstance(opt_lambda_full, list):
             final_trf.train(
-                stimuli_list, eeg_list, eeg_fs, tmin=-0.1, tmax=1.0, 
+                stimuli_list, eeg_list, eeg_fs, tmin=-0.1, tmax=0.7, 
                 regularization=opt_lambda_full, bands=[1, 1]
             )
         else:
             final_trf.train(
-                stimuli_list, eeg_list, eeg_fs, tmin=-0.1, tmax=1.0, 
+                stimuli_list, eeg_list, eeg_fs, tmin=-0.1, tmax=0.7, 
                 regularization=opt_lambda_full
             )
 
@@ -1926,10 +1675,10 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
             
     group_delta_z = np.stack(all_delta_z, axis=0) 
     eeg_group_delta_z = group_delta_z[:, eeg_indices]
-    mean_delta_z = np.mean(eeg_group_delta_z, axis=0)
+    mean_delta_z = np.mean(eeg_group_delta_z, axis=0) #mean on all subjects for each channel
     std_delta_z = np.std(eeg_group_delta_z, axis=0)
 
-    # --- Permutation testing logic if enabled ---
+    # --- permutation testing logic if enabled ---
     if n_perms:
         print("  -> Using Permutation Testing for Group IC stats...")
         group_eeg_null_perms = np.stack(all_eeg_null_perms, axis=0)[:, :, eeg_indices]
@@ -1938,32 +1687,113 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
         group_null_delta_z_dist = np.mean(null_delta_z_matrix, axis=0) 
         
         p_values = np.sum(group_null_delta_z_dist >= mean_delta_z, axis=0) / n_perms
-    else:
-        print("  -> Using Jackknife/Wilcoxon Testing for Group IC stats...")
-        p_values = []
-        for ch in range(eeg_group_delta_z.shape[1]):
-            try:
-                _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
-            except Exception:
-                res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') 
-                p = res.pvalue
-            p_values.append(p)
-            
-    p_values = np.array(p_values)
+
+
+    #old statistical way : without permutations
+    print("  -> Using Jackknife/Wilcoxon Testing for Group IC stats...")
+    p_values_no_perm = []
+    for ch in range(eeg_group_delta_z.shape[1]):
+        try:
+            _, p = jackknife_ttest(eeg_group_delta_z[:, ch], alternative='greater')
+        except Exception:
+            res = wilcoxon(eeg_group_delta_z[:, ch], alternative='greater') 
+            p = res.pvalue
+        p_values_no_perm.append(p)
+    ####
+
+    if n_perms:
+        p_values = np.array(p_values)
+        reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
+        significant_channels = np.where(reject_null)[0]
+
+        #subtracting the mean null distribution enhancement from the true enhancement
+        mean_null_floor = np.mean(group_null_delta_z_dist, axis=0)
+        corrected_delta_z = mean_delta_z - mean_null_floor
+        
+        print(f"\nTotal Subjects Processed: {eeg_group_delta_z.shape[0]}")
+        print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
+        print(f"Number of channels with significant IC enhancement according to empirical p-value via permutation null distribution: {len(significant_channels)} / {len(valid_eeg_names)}")
+        
+        if len(significant_channels) > 0:
+            print("\nSignificant Channels (FDR Corrected):")
+            for ch_idx in significant_channels:
+                print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f}) Corrected from the null mean enhancement Δz = {corrected_delta_z[ch_idx]:.4f} ")
+                
+
+    #old statistical way : without permutations 
+    p_values = np.array(p_values_no_perm)
     reject_null, p_values_fdr = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
     significant_channels = np.where(reject_null)[0]
-    
-    print(f"\nTotal Subjects Processed: {eeg_group_delta_z.shape[0]}")
-    print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
-    print(f"Number of channels with significant enhancement: {len(significant_channels)} / {len(valid_eeg_names)}")
-    
+        
+    #print(f"\nTotal Subjects Processed: {eeg_group_delta_z.shape[0]}")
+    #print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
+    print(f"\n\nNumber of channels with significant IC enhancement according to jackknife testing: {len(significant_channels)} / {len(valid_eeg_names)}")
+        
     if len(significant_channels) > 0:
         print("\nSignificant Channels (FDR Corrected):")
         for ch_idx in significant_channels:
             print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr[ch_idx]:.4f})")
+    ####
+    
 
     # ====================================================================
-    # --- ADDED: ROI-averaged statistical testing ---
+    # Computing Global-Averaged Statistics (All Channels)
+    # ====================================================================
+    print("\n\n==========================================")
+    print(" Computing Global-Averaged Statistics...")
+    print("==========================================")
+
+    # Average across ALL channels for each subject
+    subj_global_averages = np.mean(eeg_group_delta_z, axis=1) 
+    mean_global_enhancement = np.mean(subj_global_averages) 
+
+    print(f"Global Channels Used: All {len(valid_eeg_names)} electrodes")
+    print(f"Raw Mean Global Enhancement: {mean_global_enhancement:.4f}")
+
+    # permutation statistical testing
+    if n_perms:
+        print("  -> Using Permutation Testing for Global Average...")
+        
+        # Average across all channels for every permutation
+        # group_null_delta_z_dist shape: (n_perms, n_channels) -> (n_perms,)
+        global_null_averages = np.mean(group_null_delta_z_dist, axis=1)
+        
+        # Calculate the noise floor and the corrected enhancement
+        mean_global_null = np.mean(global_null_averages)
+        corrected_global_enhancement = mean_global_enhancement - mean_global_null
+        
+        # Calculate p-value
+        p_val_global = np.sum(global_null_averages >= mean_global_enhancement) / n_perms
+        
+        print(f"Corrected Mean Global Enhancement: {corrected_global_enhancement:.4f}")
+        if p_val_global < 0.05:
+            print(f"Global Permutation Test: p = {p_val_global:.4f} *** SIGNIFICANT ***")
+        else:
+            print(f"Global Permutation Test: p = {p_val_global:.4f} (Not Significant)")
+
+    #fallback to standard parametric/non-parametric tests
+    stat_shap_glob, p_shapiro_glob = shapiro(subj_global_averages)
+        
+    if p_shapiro_glob < 0.05:
+        print("  -> Normality violated (Shapiro-Wilk p < 0.05). Using Non-Parametric Wilcoxon Test.")
+        res_glob = wilcoxon(subj_global_averages, alternative='greater')
+        p_val_glob_fallback = res_glob.pvalue
+        test_name_glob = "Wilcoxon Signed-Rank"
+    else:
+        print("  -> Data is normally distributed. Using 1-Sample T-Test.")
+        res_glob = ttest_1samp(subj_global_averages, popmean=0.0, alternative='greater')
+        p_val_glob_fallback = res_glob.pvalue
+        test_name_glob = "1-Sample T-Test"
+
+    if p_val_glob_fallback < 0.05:
+        print(f"Global {test_name_glob}: p = {p_val_glob_fallback:.4f} *** SIGNIFICANT ***")
+    else:
+        print(f"Global {test_name_glob}: p = {p_val_glob_fallback:.4f} (Not Significant)")
+
+
+    # ====================================================================
+    # Computing ROI-Averaged Statistics
+    # ====================================================================
     print("\n==========================================")
     print(" Computing ROI-Averaged Statistics...")
     print("==========================================")
@@ -1972,29 +1802,58 @@ def run_song_dataset_analysis(mat_dir, env_dir, csv_dir, eeg_fs=None, env_dt=0.0
     roi_indices = [valid_eeg_names.index(ch) for ch in roi_names if ch in valid_eeg_names]
 
     if roi_indices:
+        # Calculating true ROI enhancement
         roi_delta_z = eeg_group_delta_z[:, roi_indices]
-        subj_roi_averages = np.mean(roi_delta_z, axis=1)
-        mean_roi_enhancement = np.mean(subj_roi_averages)
+        subj_roi_averages = np.mean(roi_delta_z, axis=1) # Average across channels for each subject
+        mean_roi_enhancement = np.mean(subj_roi_averages) # Group average ROI enhancement
 
-        stat_shap, p_shapiro = shapiro(subj_roi_averages)
         print(f"ROI Channels Used: {[valid_eeg_names[i] for i in roi_indices]}")
-        print(f"Mean ROI Enhancement: {mean_roi_enhancement:.4f}")
-        
-        if p_shapiro < 0.05:
+        print(f"Raw Mean ROI Enhancement: {mean_roi_enhancement:.4f}")
+
+        # permutation statistical testing
+        if n_perms:
+            print("  -> Using Permutation Testing for ROI...")
+            
+            # extracting the ROI channels from our pre-computed group null distribution
+            # group_null_delta_z_dist shape: (n_perms, n_channels)
+            roi_null_dist = group_null_delta_z_dist[:, roi_indices]
+            
+            # averaging across the ROI channels for every permutation
+            # Resulting shape: (n_perms,)
+            roi_null_averages = np.mean(roi_null_dist, axis=1)
+            
+            # Calculate the noise floor and the corrected enhancement
+            mean_roi_null = np.mean(roi_null_averages)
+            corrected_roi_enhancement = mean_roi_enhancement - mean_roi_null
+            
+            # Calculate p-value: % of random shuffles that beat the true ROI mean
+            p_val_roi = np.sum(roi_null_averages >= mean_roi_enhancement) / n_perms
+            
+            print(f"Corrected Mean ROI Enhancement: {corrected_roi_enhancement:.4f}")
+            if p_val_roi < 0.05:
+                print(f"ROI Permutation Test: p = {p_val_roi:.4f} *** SIGNIFICANT ***")
+            else:
+                print(f"ROI Permutation Test: p = {p_val_roi:.4f} (Not Significant)")
+
+
+        #fallback to standard parametric/non-parametric tests
+        stat_shap_roi, p_shapiro_roi = shapiro(subj_roi_averages)
+            
+        if p_shapiro_roi < 0.05:
             print("  -> Normality violated (Shapiro-Wilk p < 0.05). Using Non-Parametric Wilcoxon Test.")
-            res = wilcoxon(subj_roi_averages, alternative='greater')
-            p_val_roi = res.pvalue
-            test_name = "Wilcoxon Signed-Rank"
+            res_roi = wilcoxon(subj_roi_averages, alternative='greater')
+            p_val_roi_fallback = res_roi.pvalue
+            test_name_roi = "Wilcoxon Signed-Rank"
         else:
             print("  -> Data is normally distributed. Using 1-Sample T-Test.")
-            res = ttest_1samp(subj_roi_averages, popmean=0.0, alternative='greater')
-            p_val_roi = res.pvalue
-            test_name = "1-Sample T-Test"
+            res_roi = ttest_1samp(subj_roi_averages, popmean=0.0, alternative='greater')
+            p_val_roi_fallback = res_roi.pvalue
+            test_name_roi = "1-Sample T-Test"
 
-        if p_val_roi < 0.05:
-            print(f"ROI {test_name}: p = {p_val_roi:.4f} *** SIGNIFICANT ***")
+        if p_val_roi_fallback < 0.05:
+            print(f"ROI {test_name_roi}: p = {p_val_roi_fallback:.4f} *** SIGNIFICANT ***")
         else:
-            print(f"ROI {test_name}: p = {p_val_roi:.4f} (Not Significant)")
+            print(f"ROI {test_name_roi}: p = {p_val_roi_fallback:.4f} (Not Significant)")
 
     return {
         "mean_delta_z": mean_delta_z,
@@ -2040,12 +1899,14 @@ if __name__ == "__main__":
     # OpenNeuro paths
     parser.add_argument('--bids_dir', type=str, default="ds002725", help="Path to OpenNeuro BIDS directory")
     parser.add_argument('--env_dir', type=str, default="openneuro_envelopes", help="Path to envelope npy files of audio stimuli")
-    parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/ds002775-classical_pa-audioic_ic_0.0-0.3-0.5/noise_0.5", help="Path to IC npy files of audio stimuli")
+    parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/ds002775-classical_pa-audioic_ic_0.0-0.3-0.5/noise_0.3", help="Path to IC npy files of audio stimuli")
     
     # SONG dataset paths
     parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
     parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
-    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0.5", help="Path to SONG ic files")
+    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0", help="Path to SONG ic files")
+    #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/song_audioic_ic", help="Path to SONG ic files")
+    
     
     # Time-step parameters
     parser.add_argument('--env_dt', type=float, default=0.015625, help="Time step for the acoustic envelope") #to change to 0.004 for openneuro
@@ -2110,7 +1971,7 @@ if __name__ == "__main__":
     # BRANCH 2: SONG Dataset
     # ==========================================
     elif args.dataset == 'song':
-        outdir="results_song_"+args.csv_dir.split("/")[-1]
+        outdir="tmax=0.7_n_perms="+str(args.n_perms)+"results_song_"+args.csv_dir.split("/")[-1]
         os.makedirs(outdir, exist_ok=True)
         
         # Initialize output logger
@@ -2138,7 +1999,7 @@ if __name__ == "__main__":
             significant_mask=results["significant_mask"],
             score_type="Mean Δz",
             cmap="Reds",
-            vmin=0.0
+            vmin=0.0 
         )
         fig.savefig(outdir+"/group_level_enhancement_song.png", dpi=300)
         print(f"Saved SONG topomap to {outdir}/group_level_enhancement_song.png")
