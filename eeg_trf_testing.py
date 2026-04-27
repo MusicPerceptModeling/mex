@@ -26,18 +26,6 @@ from mne.preprocessing import ICA
 import scipy.io as sio
 import pandas as pd
 
-#NOTES MEETING 10/04
-#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation (IN PROGRESS), and the Bach dataset too 
-#TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
-#TO DO (DONE): downsample the EEG to 64 Hz (or 32Hz),
-#TO DO : Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
-#TO DO (DONE - it actually makes things worse!): SSP could be used to eliminate the stationary noise from the MRI machine (only the first component currently eliminated) 
-#TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check
-#TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
-#NB: Giorgia didn't use banded_regularization #TO DO differentiate depending on the analysis : use banded reg for EEG channels, use standard reg for arousal ?
-#TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
-#TO DO (DONE) : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
-
 
 def fisher_z_transform(r: np.ndarray) -> np.ndarray:
     """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
@@ -146,11 +134,7 @@ def compare_direct_models(stimuli_list, eeg_list, fs, use_banded=False):
     return z_full, z_base, delta_z, opt_lambda_full
 
 
-
-
-"""
-
-def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):#actually linear shifting would be even better but costs us in terms of data quantity
+def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_perms=100, min_shift_sec=10.0, nested=True):#not currently used we preffered mismatched epochs, even if we wanted to use such shifting, linear shifting would be better for keeping auto-correlation intact (although it would cost some data)
     
     #Method 2: Full model vs. a Null distribution created via circular shifting.
 
@@ -215,73 +199,13 @@ def evaluate_with_circular_shift(stimuli_list, eeg_list, fs, lambda_val=1.0, n_p
     p_values = np.sum(z_null_permutations >= z_full, axis=0) / n_perms
 
     return z_full, z_null_mean, delta_z_null, p_values
-    
 
 
-def evaluate_with_mismatched_epochs(stimuli_list, eeg_list, fs, opt_lambda_full, n_perms=100): #BEST OPTION but to be corrected to only shuffle IC and not envelope
-    #State-of-the-Art Null Distribution: 
-    #Predicts EEG using the acoustic/IC features from the WRONG epochs.
-    #Perfectly preserves autocorrelation while destroying mutual information.
-
-    tmin, tmax = -0.1, 0.7
-    k_folds = -1
-    n_channels = eeg_list[0].shape[1]
-    n_epochs = len(stimuli_list)
-    
-    if n_epochs < 3:
-        raise ValueError("Not enough epochs to perform rigorous mismatching.")
-
-    trf = TRF(direction=1)
-    
-    # evaluating true model using the banded lambdas
-    print("Fitting True Model for Permutation Testing...")
-    r_full = crossval(
-        trf, stimuli_list, eeg_list, fs, tmin, tmax, 
-        regularization=opt_lambda_full, bands=[1, 1], method='banded', 
-        k=k_folds, average=False, verbose=False
-    )
-    if r_full.ndim == 2:
-        r_full = np.mean(r_full, axis=0)
-    z_full = fisher_z_transform(r_full)
-
-    # null distribution via mismatching
-    print(f"Generating Null Distribution with {n_perms} Mismatched Permutations...")
-    z_null_permutations = np.zeros((n_perms, n_channels))
-
-    for p in range(n_perms):
-        # creating a shuffled index list ensuring no epoch matches its original index (Derangement)
-        shuffled_indices = np.arange(n_epochs)
-        while np.any(shuffled_indices == np.arange(n_epochs)):
-            np.random.shuffle(shuffled_indices)
-            
-        # reordering the stimuli list based on the mismatched indices
-        mismatched_stimuli = [stimuli_list[i] for i in shuffled_indices]
-
-        # fitting the model on the completely mismatched data
-        r_null = crossval(
-            trf, mismatched_stimuli, eeg_list, fs, tmin, tmax, 
-            regularization=opt_lambda_full, bands=[1, 1], method='banded', 
-            k=k_folds, average=False, verbose=False
-        )
-        
-        if r_null.ndim == 2:
-            r_null = np.mean(r_null, axis=0)
-            
-        z_null_permutations[p, :] = fisher_z_transform(r_null)
-
-    # calculating statistics
-    z_null_mean = np.mean(z_null_permutations, axis=0)
-    delta_z_null = z_full - z_null_mean
-
-    # empirical p-value: what % of random mismatches accidentally beat the true model?
-    p_values = np.sum(z_null_permutations >= z_full, axis=0) / n_perms
-
-    return z_full, z_null_mean, delta_z_null, p_values"""
-
-def evaluate_with_mismatched_epochs(stimuli_list, target_list, fs, opt_lambda_full, n_perms=100, use_banded=False): #BEST OPTION
+def evaluate_with_mismatched_epochs(stimuli_list, target_list, fs, opt_lambda_full, n_perms=100, use_banded=False): 
     """
     Creates a null distribution by shuffling only the IC feature across epochs, 
     keeping the acoustic Envelope perfectly matched to the EEG to isolate IC impact.
+    Handles length mismatches via circular wrapping (tiling) to avoid zero-padding artifacts.
     """
     tmin, tmax = -0.1, 0.7
     k_folds = -1
@@ -312,10 +236,17 @@ def evaluate_with_mismatched_epochs(stimuli_list, target_list, fs, opt_lambda_fu
             # Grabbing IC from the mismatched epoch
             ic_wrong = stimuli_list[shuffled_indices[i]][:, 1]
             
-            # Handling potential length differences between epochs 
-            min_len = min(len(stim_original), len(ic_wrong))
-            new_ic = np.zeros(len(stim_original))
-            new_ic[:min_len] = ic_wrong[:min_len]
+            target_len = len(stim_original)
+            source_len = len(ic_wrong)
+            
+            # Handling length differences via wrapping (tiling) instead of zero-padding
+            if source_len >= target_len:
+                # If the wrong IC is longer, we just truncate it
+                new_ic = ic_wrong[:target_len]
+            else:
+                # If the wrong IC is shorter, we circularly repeat it until it covers the target length
+                repeats_needed = int(np.ceil(target_len / source_len))
+                new_ic = np.tile(ic_wrong, repeats_needed)[:target_len]
             
             # Replacing the original IC with the mismatched one
             stim_mismatch[:, 1] = new_ic
@@ -343,31 +274,6 @@ def evaluate_with_mismatched_epochs(stimuli_list, target_list, fs, opt_lambda_fu
     
     return z_null_mean, z_null_permutations
 
-#I could cross validate correlations between EEG and stimulus waveform to find the best hardware delay, but there may be no need with TRF
-"""
-# Example Usage
-if __name__ == "__main__":
-    #simulating 18 trials (songs) of 2 minutes each at 64 Hz
-    n_trials = 18
-    fs = 64
-    n_samples = 120 * fs
-
-    print("Generating dummy data...")
-    dummy_stimuli = [np.random.randn(n_samples, 2) for _ in range(n_trials)]
-    dummy_eeg = [np.random.randn(n_samples, 64) for _ in range(n_trials)]
-
-    # --- Method 1 ---
-    print("\n--- Running Direct Comparison (E vs E+IC) ---")
-    z_f, z_b, delta_z = compare_direct_models(dummy_stimuli, dummy_eeg, fs)
-    print(f"Mean Enhancement (Delta Z): {delta_z.mean():.4f}")
-
-    # --- Method 2 ---
-    print("\n--- Running Circular Shift Permutations ---")
-    # Setting n_perms=5 here just so the example runs fast, use 100 for real data
-    z_f, z_null, delta_z_null, p_vals = evaluate_with_circular_shift(dummy_stimuli, dummy_eeg, fs, n_perms=5)
-    print(f"Mean Enhancement over Null: {delta_z_null.mean():.4f}")
-    print(f"Number of channels with p < 0.05: {np.sum(p_vals < 0.05)} / 64")
-"""
 ##########################################################################################################################################
 #Plotting topomap functions
 ##########################################################################################################################################
@@ -631,7 +537,7 @@ def apply_bandpass_filter(raw: mne.io.BaseRaw, l_freq: float = 1.0, h_freq: floa
     raw.filter(l_freq, h_freq, picks=picks, fir_design='firwin', phase='zero', verbose=False)
     return raw
 """
-def reject_bad_channels(raw: mne.io.BaseRaw, threshold_uv: float = 500.0) -> mne.io.BaseRaw:
+def reject_bad_channels_by_correlation(raw: mne.io.BaseRaw, threshold_uv: float = 500.0) -> mne.io.BaseRaw: #actually not correlation based anymore
     print(f"    -> Checking for bad channels (amplitude > {threshold_uv} µV)...")
     threshold_v = threshold_uv * 1e-6 
     
@@ -663,6 +569,68 @@ def reject_bad_channels(raw: mne.io.BaseRaw, threshold_uv: float = 500.0) -> mne
         print("    -> All channels within acceptable amplitude limits.")
         
     return raw
+"""
+def find_bad_channels_by_standard_deviation(raw: mne.io.BaseRaw, std_multiplier: float = 3.0) -> mne.io.BaseRaw: 
+    """
+    Detects and interpolates bad EEG channels based on variance.
+    Flags channels that are either completely flat (std ~ 0) or 
+    excessively noisy (std > X times the mean std of all active channels).
+    """
+    print(f"    -> Checking for bad channels (flatlines or std > {std_multiplier}x mean)...")
+    
+    picks = mne.pick_types(raw.info, eeg=True, exclude=[])
+    
+    # Ignore the first and last 2 seconds of the file where "filter ringing" causes fake spikes
+    sfreq = raw.info['sfreq']
+    trim_samples = int(2.0 * sfreq)
+    
+    # Extracting the middle of the data
+    if raw.n_times > 2 * trim_samples:
+        data = raw.get_data(picks=picks, start=trim_samples, stop=raw.n_times - trim_samples)
+    else:
+        data = raw.get_data(picks=picks)
+        
+    # Calculate the standard deviation for each channel
+    stds = np.std(data, axis=1)
+    
+    # Flatlines
+    # We use < 1e-10 instead of == 0 to account for microscopic floating-point noise
+    flat_idx = np.where(stds < 1e-10)[0]
+    flat_channels = [raw.ch_names[picks[i]] for i in flat_idx]
+    
+    if flat_channels:
+        print(f"      - Found {len(flat_channels)} flatline channel(s): {flat_channels}")
+
+    # Excessively noisy channels
+    active_idx = np.where(stds >= 1e-10)[0]
+    noisy_channels = []
+    
+    if len(active_idx) > 0:
+        mean_std = np.mean(stds[active_idx])
+        noise_threshold = std_multiplier * mean_std
+        
+        noisy_idx = np.where(stds > noise_threshold)[0]
+        noisy_channels = [raw.ch_names[picks[i]] for i in noisy_idx]
+        
+        if noisy_channels:
+            print(f"      - Found {len(noisy_channels)} noisy channel(s) exceeding threshold: {noisy_channels}")
+
+    # combine and interpolate
+    all_bad_channels = list(set(flat_channels + noisy_channels))
+    
+    if all_bad_channels:
+        if len(all_bad_channels) > len(picks) / 2:
+            print(f"    -> [!] WARNING: {len(all_bad_channels)} channels flagged! This implies global noise. Skipping interpolation.")
+            #one could choose to strictly interpolate the flatlines here even if you skip the noisy ones
+        else:
+            print(f"    -> Interpolating {len(all_bad_channels)} bad channels: {all_bad_channels}")
+            raw.info['bads'].extend(all_bad_channels)
+            raw.interpolate_bads(reset_bads=True, verbose=False)
+    else:
+        print("    -> All channels have acceptable variance.")
+        
+    return raw
+
 """
 def find_bad_channels_by_correlation(raw, corr_thresh=0.15): # Lowered to a realistic threshold
     print("    -> Detecting bad channels via neighbor correlation...")
@@ -701,7 +669,7 @@ def find_bad_channels_by_correlation(raw, corr_thresh=0.15): # Lowered to a real
             raw.info['bads'].extend(bads_to_mark)
             
     return raw
-
+"""
 def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp1') -> mne.io.BaseRaw: #!this is currently done in the clean_eeg_mne_objects!
     """
     Uses ICA to automatically find and subtract both eye blinks and heartbeat artifacts.
@@ -742,11 +710,11 @@ def remove_biological_artifacts_ica(raw: mne.io.BaseRaw, proxy_eog_ch: str = 'Fp
     
     return raw
 
-def remove_MRI_stationary_noise_with_SSP(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
-    """
-    Computes Signal Space Projection (SSP) to remove the highest-variance 
-    stationary background noise (often continuous MRI machine hum).
-    """
+"""def remove_MRI_stationary_noise_with_SSP(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
+
+    #Computes Signal Space Projection (SSP) to remove the highest-variance 
+    #stationary background noise (often continuous MRI machine hum).
+
     print("    -> Computing SSP to project out stationary MRI noise...")
     
     # Compute PCA-based projectors on continuous EEG data
@@ -760,7 +728,106 @@ def remove_MRI_stationary_noise_with_SSP(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
         print("      - Projected out 1 spatial component.")
     else:
         print("      - No spatial projectors computed.")
+
+    return raw"""
+
+
+
+from meegkit.dss import dss_line
+
+def extract_silent_eeg(raw, min_duration_sec=5.0):
+    """
+    Extracts purely silent epochs from the EEG recording to isolate background fMRI noise.
+    """
+    print("    -> Extracting silent blocks to isolate scanner noise...")
+    fs = raw.info['sfreq']
+    
+    #finding where no music is playing
+    music_data = raw.get_data(picks=['music'])[0]
+    threshold = 1e-8 
+    is_silent = music_data < threshold
+    
+    eeg_picks = mne.pick_types(raw.info, eeg=True)
+    eeg_data = raw.get_data(picks=eeg_picks)
+    
+    #look for where the silence turns on (1) and off (-1)
+    changes = np.diff(is_silent.astype(int))
+    silence_onsets = np.where(changes == 1)[0]
+    silence_offsets = np.where(changes == -1)[0]
+    
+    #boundary cases (if it starts or ends in silence)
+    if is_silent[0]:
+        silence_onsets = np.insert(silence_onsets, 0, 0)
+    if is_silent[-1]:
+        silence_offsets = np.append(silence_offsets, len(is_silent) - 1)
         
+    #collecting data from blocks longer than min_duration
+    min_samples = int(min_duration_sec * fs)
+    silent_chunks = []
+    
+    for start, end in zip(silence_onsets, silence_offsets):
+        if (end - start) > min_samples:
+            #shaving off the first and last 1 second to avoid the "click" of the audio turning on/off
+            safe_start = start + int(1.0 * fs)
+            safe_end = end - int(1.0 * fs)
+            silent_chunks.append(eeg_data[:, safe_start:safe_end])
+            
+    if not silent_chunks:
+        print("      [!] No long silent blocks found.")
+        return None
+        
+    #stacking them all together into one matrix of pure silence
+    pure_noise_matrix = np.hstack(silent_chunks)
+    print(f"      - Extracted {pure_noise_matrix.shape[1] / fs:.2f} total seconds of pure silence.")
+    
+    return pure_noise_matrix
+
+def remove_noise_subspace_via_pca(raw: mne.io.BaseRaw, silent_matrix: np.ndarray, subj_id: str, n_components: int = 1, outdir: str = "results") -> mne.io.BaseRaw:
+    """
+    Computes PCA on the pure silence matrix to isolate the spatial topography 
+    of the fMRI scanner/background noise, then projects it out of the full recording.
+    """
+    print(f"    -> Computing PCA on {silent_matrix.shape[1]} samples of pure silence...")
+    
+    eeg_picks = mne.pick_types(raw.info, eeg=True)
+    ch_names = [raw.ch_names[i] for i in eeg_picks]
+    
+    silent_info = mne.pick_info(raw.info, sel=eeg_picks)
+    silent_raw = mne.io.RawArray(silent_matrix, silent_info, verbose=False)
+    
+    #Computing the PCA spatial projectors (SSP)
+    #n_eeg=1 removes the single largest component. You can increase to 2 if needed.
+    projs = mne.compute_proj_raw(silent_raw, n_eeg=n_components, reject=None, verbose=False)
+    
+    #diagnostic plot: looking at what the noise looks like!
+    if projs:
+        os.makedirs(f"{outdir}/diagnostics/{subj_id}", exist_ok=True)
+        fig = mne.viz.plot_projs_topomap(projs, info=silent_info, show=False)
+        fig.suptitle(f"Removed fMRI Noise Topography (PCA)\nSubject {subj_id}")
+        fig.savefig(f"{outdir}/diagnostics/{subj_id}/pca_noise_topography.png")
+        plt.close(fig)
+    
+    print(f"    -> Projecting out the top {n_components} noise component(s) from the full recording...")
+    raw_clean = raw.copy()
+    raw_clean.add_proj(projs)
+    raw_clean.apply_proj(verbose=False)
+    
+    return raw_clean
+
+def remove_mri_harmonics_dss(raw: mne.io.BaseRaw, noise_freq: float) -> mne.io.BaseRaw:
+    print(f"    -> Running DSS to remove periodic MRI noise at {noise_freq}Hz...")
+    
+    # extract data (shape must be: samples, channels)
+    picks = mne.pick_types(raw.info, eeg=True)
+    data = raw.get_data(picks=picks).T 
+    fs = raw.info['sfreq']
+    
+    # dss_line automatically finds the spatial components dominated by this frequency
+    # and projects them out. nremove=1 or 2 is usually enough.
+    clean_data, _ = dss_line(data, fline=noise_freq, sfreq=fs, nremove=2)
+    
+    # put clean data back into the raw object
+    raw._data[picks] = clean_data.T
     return raw
 
 def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently done in the main analysis loop!
@@ -770,7 +837,7 @@ def standardize_trial(eeg_matrix: np.ndarray) -> np.ndarray: #!this is currently
     """
     print("    -> Z-scoring trial to remove baseline offsets...")
     # axis=0 standardizes across the time dimension for each channel independently
-    return zscore(eeg_matrix, axis=0) 
+    return zscore(eeg_matrix, axis=0)
 
 def clean_eeg_mne_object(raw, subj_id, outdir="results"):
     clean_raw = raw.copy()
@@ -788,23 +855,35 @@ def clean_eeg_mne_object(raw, subj_id, outdir="results"):
         mapping['music'] = 'stim'
     if 'ECG' in clean_raw.ch_names:
         mapping['ECG'] = 'ecg'
-        
+
+    #mne.rename_channels(clean_raw.info, mapping={'FP1': 'Fp1', 'FP2': 'Fp2'})
     clean_raw.set_channel_types(mapping)
 
     #montage
     montage = mne.channels.make_standard_montage('standard_1005')
     clean_raw.set_montage(montage, match_case=False, on_missing='ignore')
+
     
     #downsampling to 64 Hz before filtering and ICA saves memory and time
     print("    -> Downsampling EEG to 64 Hz...")
     clean_raw.resample(64.0, npad='auto', verbose=False)
+    
+    #freq=?
+    #clean_raw = remove_mri_harmonics_dss(clean_raw,freq)
+    
+    #silent_matrix = extract_silent_eeg(clean_raw, min_duration_sec=5.0)
+    #projecting out the MRI noise
+    #if silent_matrix is not None:
+    #    clean_raw = remove_noise_subspace_via_pca(
+    #        clean_raw, 
+    #        silent_matrix, 
+    #        subj_id, 
+    #        n_components=1, # 2 can be chosen if the noise is highly complex
+    #        outdir=outdir
+    #    )
 
     #filtering
     clean_raw.filter(l_freq=1.0, h_freq=8.0, fir_design='firwin', verbose=False)
-
-    clean_raw = find_bad_channels_by_correlation(clean_raw, corr_thresh=0.4)
-    if clean_raw.info['bads']:
-        clean_raw.interpolate_bads(reset_bads=True, verbose=False)
 
     #SSP for Stationary MRI Noise
     #clean_raw = remove_MRI_stationary_noise_with_SSP(clean_raw)
@@ -822,6 +901,10 @@ def clean_eeg_mne_object(raw, subj_id, outdir="results"):
     ica.exclude = list(set(eog_idx + ecg_idx))
     print(f"    -> ICA: Ousting {len(ica.exclude)} components.")
 
+    clean_raw = find_bad_channels_by_standard_deviation(clean_raw)
+    if clean_raw.info['bads']:
+        clean_raw.interpolate_bads(reset_bads=True, verbose=False)
+
     #diagnostic plots 
     plot_ica_diagnostics(clean_raw, ica, subj_id, outdir=outdir)
 
@@ -833,11 +916,11 @@ def clean_eeg_mne_object(raw, subj_id, outdir="results"):
 
 ############################################################################
 #specific to openneuro ds002725 :
-
+"""
 def decode_music_channel(voltage_value, feature_dir):
-    """
-    Decodes the voltage from the 'music' channel into the stimuli filename.
-    """
+    
+    #Decodes the voltage from the 'music' channel into the stimuli filename.
+    
     number = int(round(voltage_value * 10**6 * 20))
     
     #strict matching by looking for "p3_" or "file_p3_" at the very start to AVOID GETTING CONFUSED BY THE op32 for instance !!!!!
@@ -850,6 +933,15 @@ def decode_music_channel(voltage_value, feature_dir):
             
     print(f"Unknown track {number}")
     return None
+"""
+def decode_music_channel(voltage_value,feature_dir):
+    number = int(round(voltage_value * 10**6 * 20))
+    str_num = str(number)
+    for f in os.listdir(feature_dir):
+        if "p"+str_num in f :
+            return f
+    return None
+
 
 def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0.7):
     """
@@ -917,8 +1009,8 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
         env_time = np.arange(len(env_data)) * env_dt
         ic_time = np.arange(len(ic_data)) * ic_dt
 
-        print(f"  [DEBUG] Calculated Env length: {env_time[-1]:.2f} seconds")
-        print(f"  [DEBUG] Calculated IC length: {ic_time[-1]:.2f} seconds")
+        #print(f"  [DEBUG] Calculated Env length: {env_time[-1]:.2f} seconds")
+        #print(f"  [DEBUG] Calculated IC length: {ic_time[-1]:.2f} seconds")
         
         # maximum duration in seconds to know how many EEG samples to fill
         max_duration_sec = max(env_time[-1], ic_time[-1]) if len(env_time)>0 and len(ic_time)>0 else 0
@@ -935,7 +1027,7 @@ def choose_stimulus_and_align_to_eeg(raw, env_dir, ic_dir, env_dt=0.004, ic_dt=0
         #interpolating IC 
         ic_interpolator = interp1d(
             ic_time, ic_data, kind='previous', bounds_error=False, fill_value=0.0
-        ) #TO DO : what is best here between linear and previous?
+        ) #TO DO : decide what is best here between linear and previous
         ic_aligned = ic_interpolator(eeg_time)
         
         # Determine insertion bounds to prevent array overflow at the end of the recording
@@ -975,7 +1067,7 @@ def run_openneuro_dataset_analysis(bids_root_dir, env_dir, ic_dir, env_dt=0.004,
     eeg_only_names = [
         'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 
         'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz', 
-        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
+        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10', 'POz'
     ]
     
 
@@ -1899,13 +1991,14 @@ if __name__ == "__main__":
     # OpenNeuro paths
     parser.add_argument('--bids_dir', type=str, default="ds002725", help="Path to OpenNeuro BIDS directory")
     parser.add_argument('--env_dir', type=str, default="openneuro_envelopes", help="Path to envelope npy files of audio stimuli")
-    parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/ds002775-classical_pa-audioic_ic_0.0-0.3-0.5/noise_0.3", help="Path to IC npy files of audio stimuli")
+    parser.add_argument('--ic_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/ds002775-classical_pa-audioic_ic_0.0-0.3-0.5/noise_0.3_corrected_names", help="Path to IC npy files of audio stimuli")
     
     # SONG dataset paths
     parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
     parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
-    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0", help="Path to SONG ic files")
+    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5/noise_0.5", help="Path to SONG ic files")
     #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/song_audioic_ic", help="Path to SONG ic files")
+    #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/song_audioic_entropy_mc32", help="Path to SONG ic files")
     
     
     # Time-step parameters
@@ -1971,7 +2064,7 @@ if __name__ == "__main__":
     # BRANCH 2: SONG Dataset
     # ==========================================
     elif args.dataset == 'song':
-        outdir="tmax=0.7_n_perms="+str(args.n_perms)+"results_song_"+args.csv_dir.split("/")[-1]
+        outdir="tmax=0.7_n_perms="+str(args.n_perms)+"results_song_"+args.csv_dir.split("/")[-2]+"_"+args.csv_dir.split("/")[-1]
         os.makedirs(outdir, exist_ok=True)
         
         # Initialize output logger
