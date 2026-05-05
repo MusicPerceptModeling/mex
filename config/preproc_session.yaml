@@ -1,0 +1,7 @@
+preprocess_metadata:
+    metadata:
+        class_path: SessionIDyOMMetaData
+        init_args:
+            idyom_dat_dir: "/home/mathias/devel/python3/audio-it/idyom/session_test_out_full_pitch"
+            midi_dir: "/home/mathias/devel/python3/DSTM/data/session/"
+            num_proc: 60

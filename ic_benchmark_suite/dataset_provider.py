@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import datasets
 from huggingface_hub import HfApi
-        
+from platformdirs import user_cache_dir
 
 @dataclass
 class DatasetProvider:
@@ -18,7 +18,10 @@ class DatasetProvider:
             return datasets.load_from_disk(ds_name)
         except Exception as e:
             raise ValueError(f"Could not load dataset {ds_name} from Hugging Face Hub or local cache. Error: {e}")
-
+    def __post_init__(self):
+        if self.cache_dir is None:
+            self.cache_dir = user_cache_dir('mex')
+        # Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
     def persist_ds(self, ds : datasets.Dataset, ds_name: str = 'session_ds', hub_upload: bool = True):
         if hub_upload:
             file = Path(ds_name, 'train.parquet')
