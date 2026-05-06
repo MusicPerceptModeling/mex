@@ -53,6 +53,7 @@ class BenchmarkSuite:
             print(result)
     
     def benchmark_all(self, metric: str, cache_model_segment : str, ds_segment: str, cache_model_idyom: str, ds_idyom: str, periode_frames: float, time_offset_frame: int) :
+        raise NotImplementedError("This is a placeholder for a function that runs all benchmarks. It has to be ported to new class structure.")
         model_outputs_segment = self.dataset_provider.get_ds(cache_model_segment)
         model_outputs_segment = model_outputs_segment.remove_columns(['Time']) # TODO: remove
         task_ds_segment = self.dataset_provider.get_ds(ds_segment)
@@ -90,7 +91,7 @@ class BenchmarkSuite:
                 remove_outliers = False,
             )
         )
-        # TODO: streamline returns
+
 if __name__ == '__main__':
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
     CLI(BenchmarkSuite, as_positional=True, default_config_files=[str(config_path)])

@@ -186,7 +186,6 @@ class IDyOMMetaData(MetaData):
             instruments=self.instruments,
             n_midis=self.n_midis,
         )
-    # TODO: change to void parse
     @classmethod
     def parse_metadata_scheme(cls, dataset: Dataset):
         scheme = {'id': Value('int64'), 'onset': FList(Value('float64'))}

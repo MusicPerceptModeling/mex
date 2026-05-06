@@ -7,7 +7,7 @@ from datasets.features import Features, Value, Sequence
 import pandas as pd
 
 from .dataset_provider import DatasetProvider
-
+# TODO: add version control of persistent artifacts.
 @dataclass
 class Result(ABC):
     def save(self, path: str):
@@ -89,7 +89,6 @@ class Task(ABC):
         # return dataset
 
     def midm_cols(self, dataset : Dataset):
-        # TODO: don't hard code anything else than id.
         # for now accept, since more complex schemes for midms are hard to concat
         midm_cols = [col for col in dataset.column_names if col not in ["id"]]
         return midm_cols
