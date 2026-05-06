@@ -2,9 +2,8 @@ import json
 
 import pandas as pd
 
-from ic_benchmark_suite.benchmark import PandasTestResult, Task
-from ic_benchmark_suite.dataset_provider import DatasetProvider
-from ic_benchmark_suite import peak_picking
+from ..benchmark import PandasTestResult, Task
+from ..util import peak_picking
 from datasets import Dataset, concatenate_datasets
 import numpy as np
 from scipy import ndimage
@@ -12,7 +11,7 @@ import mir_eval
 from typing import List
 from sklearn.model_selection import KFold
 
-from ic_benchmark_suite.metadata.segment import SegmentMetaData
+from ..metadata import SegmentMetaData
 def transform_for_peak(std, nll):
     nll[np.isnan(nll)] = np.nanmin(nll)
     nll = ndimage.gaussian_filter1d(nll, std)

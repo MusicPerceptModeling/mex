@@ -1,0 +1,3 @@
+from .repetition_decrease import RepetitionDecreaseTask
+from .segment_boundary import SegmentBoundaryTask
+from .idyom_consistency import IDyOMConsistencyTask

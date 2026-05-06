@@ -6,7 +6,7 @@ from datasets import Dataset
 from datasets.features import Features, Value, Sequence
 import pandas as pd
 
-from ic_benchmark_suite.dataset_provider import DatasetProvider
+from .dataset_provider import DatasetProvider
 
 @dataclass
 class Result(ABC):

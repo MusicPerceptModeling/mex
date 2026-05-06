@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Callable
 from pretty_midi import PrettyMIDI
 
-from ic_benchmark_suite.benchmark import MetaData
-from ic_benchmark_suite.dataset_provider import DatasetProvider
+from ..benchmark import MetaData
+from ..dataset_provider import DatasetProvider
 
 program_dict = {
     "Acoustic Grand Piano": 0, "Bright Acoustic Piano": 1, "Electric Grand Piano": 2, "Honky-tonk Piano": 3,

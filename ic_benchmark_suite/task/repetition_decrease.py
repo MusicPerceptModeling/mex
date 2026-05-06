@@ -7,9 +7,9 @@ import pandas as pd
 import scipy.stats
 from datasets import Dataset, concatenate_datasets
 
-from ic_benchmark_suite.benchmark import PandasTestResult, Task
-from ic_benchmark_suite.metadata.segment import SegmentMetaData
-from .welford import merge as welford_merge, std as welford_std
+from ..benchmark import PandasTestResult, Task
+from ..metadata.segment import SegmentMetaData
+from ..util.welford import merge as welford_merge, std as welford_std
 
 
 def _extract_segment_df_from_nll_dataset(

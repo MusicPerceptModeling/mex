@@ -1,4 +1,4 @@
-benchmark_2:
+benchmark:
   task: SegmentBoundaryTask
   midm: [
     'cache/metrics/salami_pa-audioic_ic-0.0-0.3-0.5',

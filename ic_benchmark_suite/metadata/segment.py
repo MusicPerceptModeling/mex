@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from ic_benchmark_suite.benchmark import MetaData
+from ..benchmark import MetaData
 
 
 from datasets import Dataset, Features, List as FList, Sequence, Value
@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
-from ic_benchmark_suite.dataset_provider import DatasetProvider
+from ..dataset_provider import DatasetProvider
 
 
 @dataclass

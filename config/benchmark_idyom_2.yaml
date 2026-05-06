@@ -1,4 +1,4 @@
-benchmark_2:
+benchmark:
   task: IDyOMConsistencyTask
   # cache_model: 'cache/metrics/session_pa-audioic_ic-0.0-0.3-0.5'
   midm: 'cache/metrics/session_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5'

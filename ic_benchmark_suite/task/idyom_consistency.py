@@ -7,8 +7,8 @@ import pandas as pd
 import scipy.stats
 from datasets import Dataset, Value, List as FList, Features
 
-from ic_benchmark_suite.benchmark import Task, PandasTestResult
-from ic_benchmark_suite.metadata.symbolic import IDyOMMetaData
+from ..benchmark import Task, PandasTestResult
+from ..metadata.symbolic import IDyOMMetaData
 
 
 class IDyOMConsistencyTask(Task):

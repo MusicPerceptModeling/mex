@@ -1,20 +1,18 @@
 from pathlib import Path
 import re
-from typing import Callable, List
+from typing import List
 
 from jsonargparse import CLI
 from dataclasses import dataclass
 
-from ic_benchmark_suite.metadata.symbolic import SessionIDyOMMetaData
 import datasets
 
-from ic_benchmark_suite.baseline import Baseline
-from ic_benchmark_suite import IDyOMConsistencyTask
-from ic_benchmark_suite.benchmark import MetaData, Task
-from ic_benchmark_suite.benchmark_repetition_test import RepetitionDecreaseTask
-from ic_benchmark_suite.benchmark_segment_boundary import SegmentBoundaryTask
-from ic_benchmark_suite.dataset_provider import DatasetProvider
-from ic_benchmark_suite.metadata.segment import SalamiMetaData
+from .baseline import Baseline
+from .benchmark import MetaData, Task
+from .task import RepetitionDecreaseTask
+from .task import SegmentBoundaryTask
+from .task import IDyOMConsistencyTask
+from .dataset_provider import DatasetProvider
 
 
 def extract_numeric_stem_id(path: str) -> int:
@@ -23,32 +21,6 @@ def extract_numeric_stem_id(path: str) -> int:
 @dataclass
 class BenchmarkSuite:
     dataset_provider: DatasetProvider
-    # def create_idyom_ds(
-    #     self,
-    #     ds_name: str,
-    #     session_dat_dir: str,
-    #     midi_dir : str,  
-    #     n_midis : int = 200,
-    #     num_proc : int = 60,
-    #     hub_upload: bool = False,
-    #     id_extractor : Callable[[str], int] =  extract_numeric_stem_id
-    # ):
-    #     session_idyom_ds = SessionIDyOMMetaData.idyom_ds(
-    #         idyom_dat_dir=Path(session_dat_dir),
-    #         midi_dir=Path(midi_dir),
-    #         id_path_extractor = id_extractor,
-    #         cache_dir=self.dataset_provider.cache_dir,
-    #         n_midis=n_midis,
-    #         num_proc=num_proc,
-    #     )
-    #     self.dataset_provider.persist_ds(session_idyom_ds, ds_name=ds_name, hub_upload=hub_upload)
-    # def create_salami_ds(self, ds_name : str, salami_root: str, n_proc: int | None, hub_upload: bool = False):
-    #     salami_ds = SalamiMetaData.read_annotations_hf(
-    #         folder=salami_root,
-    #         cache_dir=self.dataset_provider.cache_dir,
-    #         keep_ids=True,
-    #         n_proc=n_proc)
-    #     self.dataset_provider.persist_ds(salami_ds, ds_name=ds_name, hub_upload=hub_upload)
     def preprocess_metadata(self, metadata: MetaData):
         metadata.preprocess()
         
@@ -61,7 +33,7 @@ class BenchmarkSuite:
             ic_ds = model.entropy(audio_ds)
         self.dataset_provider.persist_ds(ic_ds, ds_name=cache_name, hub_upload=hub_upload)
 
-    def benchmark_2(self, task: Task, midm: str | List[str], metadata: MetaData | str, task_kwargs: dict = {}, out_path: str = None, print_result: bool = True):
+    def benchmark(self, task: Task, midm: str | List[str], metadata: MetaData | str, task_kwargs: dict = {}, out_path: str = None, print_result: bool = True):
         if isinstance(midm, str):
             midm = self.dataset_provider.get_ds(midm)
         else:
@@ -80,47 +52,6 @@ class BenchmarkSuite:
         if print_result:
             print(result)
     
-
-    def benchmark(self, task: str, cache_model: str | List[str], ds_name: str, task_kwargs: dict = {}):
-        if isinstance(cache_model, str):
-            model_outputs = self.dataset_provider.get_ds(cache_model)
-        else:
-            model_outputs = [self.dataset_provider.get_ds(cache_model[0])]
-            for cm in cache_model[1:]:
-                model_outputs.append(self.dataset_provider.get_ds(cm).remove_columns(['Time', 'id'])) # TODO: remove
-            model_outputs = datasets.concatenate_datasets(model_outputs, axis=1)
-        task_ds = self.dataset_provider.get_ds(ds_name)
-        if task == 'idyom-consistency':
-            try:
-                # TODO: make this self explainable. Deal with how arguments should be passed. Alternativey, we should make seperate methods for each task.
-                val = task_kwargs.pop('value')
-                task_ds = task_ds.select_columns(['id', 'onset', f'idyom_{val}']).rename_column(f'idyom_{val}', 'idyom_val')
-            except Exception as e:
-                raise ValueError("For idyom-consistency task, task_kwargs must contain 'value' key with value 'ic' or 'entropy'.") from e
-
-            # TODO: handle time_offset_frame for ic/entropy.
-            results =  IDyOMConsistencyTask().run_task(
-                val_dataset=model_outputs,
-                idyom_ds=task_ds,
-                **task_kwargs
-            )
-            print(results)
-        elif task == 'repetition':
-            model_outputs = model_outputs.remove_columns(['Time']) # TODO: remove
-            # TODO: we could create it with the task parameters such that it can more easily be passed to 
-            # TODO: we should do this regardless of the parameters to get rid of the  if clause
-            repetition_result = RepetitionDecreaseTask().run_task(
-                midm=model_outputs,
-                metadata=task_ds,
-                **task_kwargs
-            )
-            print(repetition_result.summary)
-        elif task == "segment-boundary-alignment":
-            results = SegmentBoundaryTask.segment_boundary_alignment(
-                model_outputs,
-                task_ds,
-            **task_kwargs)
-            print(results)
     def benchmark_all(self, metric: str, cache_model_segment : str, ds_segment: str, cache_model_idyom: str, ds_idyom: str, periode_frames: float, time_offset_frame: int) :
         model_outputs_segment = self.dataset_provider.get_ds(cache_model_segment)
         model_outputs_segment = model_outputs_segment.remove_columns(['Time']) # TODO: remove
