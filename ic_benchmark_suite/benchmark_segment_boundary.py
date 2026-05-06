@@ -2,6 +2,7 @@ import json
 
 import pandas as pd
 
+from ic_benchmark_suite.benchmark import PandasTestResult, Task
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 from ic_benchmark_suite import peak_picking
 from datasets import Dataset, concatenate_datasets
@@ -10,6 +11,8 @@ from scipy import ndimage
 import mir_eval
 from typing import List
 from sklearn.model_selection import KFold
+
+from ic_benchmark_suite.metadata.segment import SegmentMetaData
 def transform_for_peak(std, nll):
     nll[np.isnan(nll)] = np.nanmin(nll)
     nll = ndimage.gaussian_filter1d(nll, std)
@@ -60,72 +63,137 @@ def calc_peaks(ex, hierarchy_levels, periode_frames, window_boundary_matching, t
                         res.setdefault('nrefs', []).append(len(secs_start))
                         res.setdefault('npreds', []).append(len(peak))
     return res_all
-def segment_boundary_alignment(
-    model_outputs : Dataset,
-    metadata_ds: Dataset,
-    periode_frames : float,
-    peak_picking_kwargs :List[dict] = [dict(std=5.0)],
-    time_offset_frame : int = 0,
-    window_boundary_matching: float = 1.0,
-    repetition_modes: list = ['all', 'only_first_occurence', 'change'],
-    hierarchy_levels = ['lowercase', 'uppercase', 'functions'],
-    num_proc = None,
-    n_splits: int = 5,
-):
-    metadata_ds = metadata_ds.select_columns(['id', *hierarchy_levels])
-    model_outputs = model_outputs.sort('id')
-    metadata_ds = metadata_ds.sort('id')
-    common_ids = set(model_outputs['id']).intersection(set(metadata_ds['id']))
-    model_outputs = model_outputs.filter(lambda id: id in common_ids, input_columns=['id'])
-    metadata_ds = metadata_ds.filter(lambda id: id in common_ids, input_columns=['id'])
-    concat = concatenate_datasets([model_outputs.remove_columns(['id']), metadata_ds], axis=1)
-    
-    all_res = concat.remove_columns(['id']).map(
-        calc_peaks,
-        fn_kwargs=dict(
-            hierarchy_levels=hierarchy_levels,
-            peak_picking_kwargs=peak_picking_kwargs,
+class SegmentBoundaryTask(Task):
+    def __init__(self):
+        super().__init__(SegmentMetaData)
+
+    def _run_task(
+        self,
+        midm : Dataset,
+        metadata: Dataset,
+        periode_frames : float,
+        peak_picking_kwargs :List[dict] = [dict(std=5.0)],
+        time_offset_frame : int = 0,
+        window_boundary_matching: float = 1.0,
+        repetition_modes: list = ['all', 'only_first_occurence', 'change'],
+        hierarchy_levels = ['lowercase', 'uppercase', 'functions'],
+        num_proc = None,
+        n_splits: int = 5,
+    ) -> PandasTestResult:
+        df = self.segment_boundary_alignment(
+            midm=midm,
+            metadata=metadata,
             periode_frames=periode_frames,
-            window_boundary_matching=window_boundary_matching,
+            peak_picking_kwargs=peak_picking_kwargs,
             time_offset_frame=time_offset_frame,
-            repetition_modes=repetition_modes
-        ),
-        keep_in_memory=True,
-        num_proc=num_proc
-    )
-    
-    # K-fold cross validation
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    
-    # Get indices for k-fold splits
-    sorted_common_ids = sorted(common_ids)
-    id_to_idx = {id_: idx for idx, id_ in enumerate(sorted_common_ids)}
-    indices = np.array([id_to_idx[id_] for id_ in concat['id']])
-    
-    fold_results = []
-    for fold_idx, (train_indices, test_indices) in enumerate(kf.split(indices)):
-        # Extract performance metrics for training fold
-        train_res = all_res.select(train_indices)
-        train_dfs = extract_performance(train_res)
+            window_boundary_matching=window_boundary_matching,
+            repetition_modes=repetition_modes,
+            hierarchy_levels=hierarchy_levels,
+            num_proc=num_proc,
+            n_splits=n_splits
+        )
+        return PandasTestResult(summary=df)
+    @classmethod
+    def segment_boundary_alignment(
+        cls,
+        midm : Dataset,
+        metadata: Dataset,
+        periode_frames : float,
+        peak_picking_kwargs :List[dict] = [dict(std=5.0)],
+        time_offset_frame : int = 0,
+        window_boundary_matching: float = 1.0,
+        repetition_modes: list = ['all', 'only_first_occurence', 'change'],
+        hierarchy_levels = ['lowercase', 'uppercase', 'functions'],
+        num_proc = None,
+        n_splits: int = 5,
+    ):
+        metadata = metadata.select_columns(['id', *hierarchy_levels])
+        midm = midm.sort('id')
+        metadata = metadata.sort('id')
+        common_ids = set(midm['id']).intersection(set(metadata['id']))
+        midm = midm.filter(lambda id: id in common_ids, input_columns=['id'])
+        metadata = metadata.filter(lambda id: id in common_ids, input_columns=['id'])
+        concat = concatenate_datasets([midm.remove_columns(['id']), metadata], axis=1)
         
-        # Find best peak picking parameters on training fold
-        best_peak_picking = (
-            train_dfs.assign(f_measure=pd.to_numeric(train_dfs['f_measure'], errors='coerce'))
-            .sort_values('f_measure', ascending=False)
-            .drop_duplicates(['hierarchy_level', 'repetition_mode', 'midm'], keep='first')
-            .loc[:, ['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs', 'f_measure']]
-            .sort_values(['midm', 'hierarchy_level', 'repetition_mode'])
-            .reset_index(drop=True)
+        all_res = concat.remove_columns(['id']).map(
+            calc_peaks,
+            fn_kwargs=dict(
+                hierarchy_levels=hierarchy_levels,
+                peak_picking_kwargs=peak_picking_kwargs,
+                periode_frames=periode_frames,
+                window_boundary_matching=window_boundary_matching,
+                time_offset_frame=time_offset_frame,
+                repetition_modes=repetition_modes
+            ),
+            keep_in_memory=True,
+            num_proc=num_proc
         )
         
-        # Extract performance metrics for test fold
-        test_res = all_res.select(test_indices)
-        test_dfs = extract_performance(test_res)
+        # K-fold cross validation
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
         
-        # Evaluate on test fold
-        selected_test = (
-            test_dfs.merge(
-                best_peak_picking[['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs']],
+        # Get indices for k-fold splits
+        sorted_common_ids = sorted(common_ids)
+        id_to_idx = {id_: idx for idx, id_ in enumerate(sorted_common_ids)}
+        indices = np.array([id_to_idx[id_] for id_ in concat['id']])
+        
+        fold_results = []
+        for fold_idx, (train_indices, test_indices) in enumerate(kf.split(indices)):
+            # Extract performance metrics for training fold
+            train_res = all_res.select(train_indices)
+            train_dfs = extract_performance(train_res)
+            
+            # Find best peak picking parameters on training fold
+            best_peak_picking = (
+                train_dfs.assign(f_measure=pd.to_numeric(train_dfs['f_measure'], errors='coerce'))
+                .sort_values('f_measure', ascending=False)
+                .drop_duplicates(['hierarchy_level', 'repetition_mode', 'midm'], keep='first')
+                .loc[:, ['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs', 'f_measure']]
+                .sort_values(['midm', 'hierarchy_level', 'repetition_mode'])
+                .reset_index(drop=True)
+            )
+            
+            # Extract performance metrics for test fold
+            test_res = all_res.select(test_indices)
+            test_dfs = extract_performance(test_res)
+            
+            # Evaluate on test fold
+            selected_test = (
+                test_dfs.merge(
+                    best_peak_picking[['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs']],
+                    on=['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs'],
+                    how='inner'
+                )
+                .loc[:, ['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs', 'precision', 'recall', 'f_measure']]
+                .sort_values(['midm', 'hierarchy_level', 'repetition_mode'])
+                .reset_index(drop=True)
+            )
+            
+            selected_test['fold'] = fold_idx
+            fold_results.append(selected_test)
+        
+        # Combine results from all folds
+        cv_results = pd.concat(fold_results, ignore_index=True)
+        
+        # Calculate best average F1 using harmonic mean
+        # Harmonic mean is appropriate for F1 since F1 is itself a harmonic mean (of precision and recall)
+        cv_results['f_measure'] = pd.to_numeric(cv_results['f_measure'], errors='coerce')
+        
+        avg_f1_results = (
+            cv_results.groupby(['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs'])
+            .agg(f_measure_harmonic_mean=('f_measure', lambda x: len(x) / (1.0 / x).sum()))
+            .reset_index()
+            .sort_values('f_measure_harmonic_mean', ascending=False)
+            .drop_duplicates(['hierarchy_level', 'repetition_mode', 'midm'], keep='first')
+        )
+        
+
+        full_dfs = extract_performance(all_res)
+        
+        # Merge with optimal parameters and compute final results
+        final_results = (
+            full_dfs.merge(
+                avg_f1_results[['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs']],
                 on=['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs'],
                 how='inner'
             )
@@ -134,40 +202,7 @@ def segment_boundary_alignment(
             .reset_index(drop=True)
         )
         
-        selected_test['fold'] = fold_idx
-        fold_results.append(selected_test)
-    
-    # Combine results from all folds
-    cv_results = pd.concat(fold_results, ignore_index=True)
-    
-    # Calculate best average F1 using harmonic mean
-    # Harmonic mean is appropriate for F1 since F1 is itself a harmonic mean (of precision and recall)
-    cv_results['f_measure'] = pd.to_numeric(cv_results['f_measure'], errors='coerce')
-    
-    avg_f1_results = (
-        cv_results.groupby(['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs'])
-        .agg(f_measure_harmonic_mean=('f_measure', lambda x: len(x) / (1.0 / x).sum()))
-        .reset_index()
-        .sort_values('f_measure_harmonic_mean', ascending=False)
-        .drop_duplicates(['hierarchy_level', 'repetition_mode', 'midm'], keep='first')
-    )
-    
-
-    full_dfs = extract_performance(all_res)
-    
-    # Merge with optimal parameters and compute final results
-    final_results = (
-        full_dfs.merge(
-            avg_f1_results[['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs']],
-            on=['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs'],
-            how='inner'
-        )
-        .loc[:, ['hierarchy_level', 'repetition_mode', 'midm', 'peak_picking_kwargs', 'precision', 'recall', 'f_measure']]
-        .sort_values(['midm', 'hierarchy_level', 'repetition_mode'])
-        .reset_index(drop=True)
-    )
-    
-    return final_results
+        return final_results
 
 def extract_performance(res_all_):
     dfs = []

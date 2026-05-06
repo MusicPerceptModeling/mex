@@ -12,7 +12,7 @@ from ic_benchmark_suite.baseline import Baseline
 from ic_benchmark_suite import IDyOMConsistencyTask
 from ic_benchmark_suite.benchmark import MetaData, Task
 from ic_benchmark_suite.benchmark_repetition_test import RepetitionDecreaseTask
-from ic_benchmark_suite.benchmark_segment_boundary import segment_boundary_alignment
+from ic_benchmark_suite.benchmark_segment_boundary import SegmentBoundaryTask
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 from ic_benchmark_suite.metadata.segment import SalamiMetaData
 
@@ -116,7 +116,7 @@ class BenchmarkSuite:
             )
             print(repetition_result.summary)
         elif task == "segment-boundary-alignment":
-            results = segment_boundary_alignment(
+            results = SegmentBoundaryTask.segment_boundary_alignment(
                 model_outputs,
                 task_ds,
             **task_kwargs)
@@ -126,9 +126,9 @@ class BenchmarkSuite:
         model_outputs_segment = model_outputs_segment.remove_columns(['Time']) # TODO: remove
         task_ds_segment = self.dataset_provider.get_ds(ds_segment)
         results = [
-            segment_boundary_alignment(
-                model_outputs_segment,
-                task_ds_segment,
+            SegmentBoundaryTask().run_task(
+                midm=model_outputs_segment,
+                metadata=task_ds_segment,
                 periode_frames=periode_frames,
                 time_offset_frame=time_offset_frame,
                 repetition_mode=segment_inclusion,
