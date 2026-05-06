@@ -1,6 +1,6 @@
 import numpy as np
 
-from ic_benchmark_suite import repetition_decrease
+# from mex.task.repetition_decrease import ?
 import pytest
 from datasets import Dataset
 param = pytest.mark.parametrize
@@ -19,6 +19,7 @@ param = pytest.mark.parametrize
 #     dict(causal=True, same_partition=True, pos_enc='rotary_xpos'))
 # )
 def test_repetition():
+    raise NotImplementedError("This is a placeholder for a test for the repetition decrease task. It has to be ported to new class structure.")
     icc = np.arange(12)
     model_output = Dataset.from_list([
         {

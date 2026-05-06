@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ic-benchmark-suite"
+name = "mex"
 version = "0.1.0"
-description = "IC benchmark suite"
+description = "Musical Expectation (MEX) benchmark suite"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -22,10 +22,10 @@ dependencies = [
 [project.optional-dependencies]
 
 all = [
-    "ic-benchmark-suite[baselines]",
-    "ic-benchmark-suite[extras]",
-    "ic-benchmark-suite[tests]",
-    "ic-benchmark-suite[demo]",
+    "mex[baselines]",
+    "mex[extras]",
+    "mex[tests]",
+    "mex[demo]",
 ]
 
 baselines = [
@@ -53,4 +53,4 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ic_benchmark_suite*"]
+include = ["mex*"]

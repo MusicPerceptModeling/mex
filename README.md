@@ -1,3 +1,5 @@
+
+# TODO: port the benchmark suite to the new class structure, then remove this file and the corresponding test file
 # music_surprisal_benchmarks
 
 Installable package for IC benchmark tasks.
@@ -38,15 +40,15 @@ This repetition benchmark can be run on any compatible dataset; SALAMI is the ex
 CLI (with config):
 
 ```bash
-python -m ic_benchmark_suite.cli --config config/benchmark_repetition.yaml benchmark
+python -m mex.cli --config config/benchmark_repetition.yaml benchmark
 ```
 
 API:
 
 ```python
 import os
-from ic_benchmark_suite import repetition_decrease
-from ic_benchmark_suite.dataset_provider import DatasetProvider
+from mex import repetition_decrease
+from mex.dataset_provider import DatasetProvider
 
 dataset_provider = DatasetProvider(
 	cache_dir="./cache",
@@ -76,16 +78,16 @@ For a full runnable example, see [`demo.ipynb`](demo.ipynb).
 
 The repository currently provides two baseline models:
 
-- `ic_benchmark_suite.baseline.audioic.AudioIC`
-- `ic_benchmark_suite.baseline.pa_audioic.PAAudioIC`
+- `mex.baseline.audioic.AudioIC`
+- `mex.baseline.pa_audioic.PAAudioIC`
 
 Minimal API usage:
 
 ```python
 import os
-from ic_benchmark_suite.dataset_provider import DatasetProvider
-from ic_benchmark_suite.baseline.audioic import AudioIC
-from ic_benchmark_suite.baseline.pa_audioic import PAAudioIC
+from mex.dataset_provider import DatasetProvider
+from mex.baseline.audioic import AudioIC
+from mex.baseline.pa_audioic import PAAudioIC
 
 dp = DatasetProvider(
 	cache_dir="./cache",
@@ -114,7 +116,7 @@ This, usually, requires implimenting a function that takes two [Huggingface `Dat
 - `model_outputs`,
 - `metadata_ds`
 
-See the current benchmark entry point: [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L341).
+See the current benchmark entry point: [`repetition_decrease`](mex/benchmark_repetition_test.py#L341).
 
 `model_outputs` usually contains at least two columns: 
 - audio file `id`
@@ -124,9 +126,9 @@ See the current benchmark entry point: [`repetition_decrease`](ic_benchmark_suit
 
 Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
 
-Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](ic_benchmark_suite/benchmark_repetition_test.py#L349-L361)).
+Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
 
-With the exception of the [`idyom_consistency`](ic_benchmark_suite/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
+With the exception of the [`idyom_consistency`](mex/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
 
 ## License
 

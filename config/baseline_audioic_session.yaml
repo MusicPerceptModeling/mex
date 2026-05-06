@@ -1,6 +1,6 @@
 baseline:
   model:
-    class_path: ic_benchmark_suite.baseline.audioic.AudioIC
+    class_path: mex.baseline.audioic.AudioIC
     init_args:
       monte_carlo_samples: 32
   audio_ds: cache/datasets/session_ds_entropy

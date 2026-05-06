@@ -1,6 +1,6 @@
 baseline:
   model:
-    class_path: ic_benchmark_suite.baseline.pa_audioic.PAAudioIC
+    class_path: mex.baseline.pa_audioic.PAAudioIC
     init_args:
       noise_levels: [0.0, 0.3, 0.5]
       monte_carlo_samples: 32
