@@ -9,7 +9,7 @@ from ic_benchmark_suite.metadata.symbolic import SessionIDyOMMetaData
 import datasets
 
 from ic_benchmark_suite.baseline import Baseline
-from ic_benchmark_suite import idyom_corr
+from ic_benchmark_suite import IDyOMConsistencyTask
 from ic_benchmark_suite.benchmark import MetaData, Task
 from ic_benchmark_suite.benchmark_repetition_test import RepetitionDecreaseTask
 from ic_benchmark_suite.benchmark_segment_boundary import segment_boundary_alignment
@@ -61,7 +61,7 @@ class BenchmarkSuite:
             ic_ds = model.entropy(audio_ds)
         self.dataset_provider.persist_ds(ic_ds, ds_name=cache_name, hub_upload=hub_upload)
 
-    def benchmark_2(self, task: Task, midm: str | List[str], metadata: MetaData | str, task_kwargs: dict = {}, outpath: str = None, print_result: bool = True):
+    def benchmark_2(self, task: Task, midm: str | List[str], metadata: MetaData | str, task_kwargs: dict = {}, out_path: str = None, print_result: bool = True):
         if isinstance(midm, str):
             midm = self.dataset_provider.get_ds(midm)
         else:
@@ -75,8 +75,8 @@ class BenchmarkSuite:
             metadata = metadata.load()
         # TODO: possibly but the task_kwargs in the constructor instead
         result = task.run_task(midm=midm, metadata=metadata, **task_kwargs)
-        if outpath is not None:
-            result.save(path=outpath)
+        if out_path is not None:
+            result.save(path=out_path)
         if print_result:
             print(result)
     
@@ -99,7 +99,7 @@ class BenchmarkSuite:
                 raise ValueError("For idyom-consistency task, task_kwargs must contain 'value' key with value 'ic' or 'entropy'.") from e
 
             # TODO: handle time_offset_frame for ic/entropy.
-            results =  idyom_corr(
+            results =  IDyOMConsistencyTask().run_task(
                 val_dataset=model_outputs,
                 idyom_ds=task_ds,
                 **task_kwargs
@@ -136,7 +136,7 @@ class BenchmarkSuite:
             ) for segment_inclusion in ['all', 'only_first_occurence', 'change']
         ]
         results.append(
-            repetition_decrease(
+            RepetitionDecreaseTask().run_task(
                 model_outputs = model_outputs_segment,
                 metadata_ds = task_ds_segment,
                 periode_frames = periode_frames,
@@ -151,7 +151,7 @@ class BenchmarkSuite:
 
         task_ds_idyom = task_ds_idyom.select_columns(['id', 'onset', f'idyom_{metric}']).rename_column(f'idyom_{metric}', 'idyom_val')
         results.append(
-            idyom_corr(
+            IDyOMConsistencyTask().run_task(
                 val_dataset = model_outputs_idyom,
                 idyom_ds = task_ds_idyom,
                 periode_frames = periode_frames,

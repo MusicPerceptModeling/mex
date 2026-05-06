@@ -7,7 +7,7 @@ import pandas as pd
 import scipy.stats
 from datasets import Dataset, concatenate_datasets
 
-from ic_benchmark_suite.benchmark import Task
+from ic_benchmark_suite.benchmark import PandasTestResult, Task
 from ic_benchmark_suite.metadata.segment import SegmentMetaData
 from .welford import merge as welford_merge, std as welford_std
 
@@ -242,17 +242,6 @@ def run_repetition_test(
 
 
 
-class RepetitionTestResult:
-    def __init__(self, summary: pd.DataFrame):
-        self.summary = summary
-    def __str__(self) -> str:
-        return self.summary.to_string(index=False)
-    def save(self, path: str):
-        self.summary.to_parquet(path)
-    @classmethod
-    def load(cls, path: str) -> 'RepetitionTestResult':
-        summary = pd.read_parquet(path)
-        return cls(summary=summary)
 class RepetitionDecreaseTask(Task):
     def __init__(self):
         super().__init__(SegmentMetaData)
@@ -268,7 +257,7 @@ class RepetitionDecreaseTask(Task):
         merge_variations = False,
         num_proc = None,
         repetition_modes = [['all'], ['first'],],
-    ) -> RepetitionTestResult:
+    ) -> PandasTestResult:
         ids_union = set(midm["id"]).intersection(set(metadata["id"]))
         metadata = metadata.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
         midm = midm.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
@@ -292,4 +281,4 @@ class RepetitionDecreaseTask(Task):
             )
             
         df = run_repetition_test(seg_df, midm_column="midm_column", repetition_modes=repetition_modes)
-        return RepetitionTestResult(summary=df)
+        return PandasTestResult(summary=df)

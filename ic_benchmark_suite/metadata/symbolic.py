@@ -6,7 +6,7 @@ from io import BytesIO
 from datasets.features import Sequence
 import numpy as np
 import pandas as pd
-from datasets import Dataset, Features, Value
+from datasets import Dataset, Features, Value, List as FList
 
 
 from pathlib import Path
@@ -71,6 +71,7 @@ class IDyOMMetaData(MetaData):
         self.num_proc = num_proc
         self.instruments = instruments
         self.n_midis = n_midis
+
     @classmethod
     def synth_midi(
         cls,
@@ -134,7 +135,7 @@ class IDyOMMetaData(MetaData):
 
         Returns per-session rows with: id, idyom_ic, idyom_onset.
         """
-
+        # TODO: make sure that onsets for entropy is correct 
         idyom_dat_dir = Path(idyom_dat_dir)
         dat_paths = [str(p) for p in sorted(idyom_dat_dir.glob("*.dat"))]
 
@@ -188,13 +189,16 @@ class IDyOMMetaData(MetaData):
     # TODO: change to void parse
     @classmethod
     def parse_metadata_scheme(cls, dataset: Dataset):
-        required_features = {
-            "id": Value("int64"),
-            "onset": Sequence(Value("float64")),
-            "idyom_ic": Sequence(Value("float64")),
-            "idyom_entropy": Sequence(Value("float64")),
-        } 
-        assert required_features == {feature: dataset.features[feature] for feature in required_features}, f"Dataset features {dataset.features} do not match required features {required_features} for IDyOMMetaData. "
+        scheme = {'id': Value('int64'), 'onset': FList(Value('float64'))}
+        no_missing_collumns = False
+        if "idyom_ic" in dataset.features:
+            scheme['idyom_ic'] = FList(Value('float64'))
+            no_missing_collumns = True
+        if "idyom_entropy" in dataset.features:
+            scheme['idyom_entropy'] = FList(Value('float64'))
+            no_missing_collumns = True
+        assert no_missing_collumns, "Some required columns are missing from the dataset"
+        dataset.select_columns(list(scheme.keys())).cast(Features(scheme))
         
 class SessionIDyOMMetaData(IDyOMMetaData):
     def __init__(

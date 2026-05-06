@@ -4,6 +4,7 @@ from typing import Callable, Iterable, List
 from warnings import warn
 from datasets import Dataset
 from datasets.features import Features, Value, Sequence
+import pandas as pd
 
 from ic_benchmark_suite.dataset_provider import DatasetProvider
 
@@ -21,7 +22,18 @@ class Result(ABC):
     def __str__(self) -> str:
         pass
 
-    
+class PandasTestResult:
+    def __init__(self, summary: pd.DataFrame):
+        self.summary = summary
+    def __str__(self) -> str:
+        return self.summary.to_string(index=False)
+    def save(self, path: str):
+        self.summary.to_parquet(path)
+    @classmethod
+    def load(cls, path: str) -> 'PandasTestResult':
+        summary = pd.read_parquet(path)
+        return cls(summary=summary)
+
 
 @dataclass
 class MetaData(ABC):
@@ -65,17 +77,21 @@ class Task(ABC):
                 **{label: Sequence(Value("float64")) for label in labels}
             }
         )
-    def cast_midm(self, dataset: Dataset) -> Dataset:
+    def parse_midm_scheme(self, dataset: Dataset):
         assert "id" in dataset.column_names, "Dataset must contain 'id' column."
         midm_cols = self.midm_cols(dataset)
         if not midm_cols:
             raise ValueError("labels must not be empty")
         scheme = self._midm_scheme(midm_cols)
-        dataset = dataset.cast(scheme)
-        return dataset
+        
+        # assert scheme == {feature: dataset.features[feature] for feature in scheme}, f"Dataset features {dataset.features} do not match required features {scheme} for midm."
+        dataset.select_columns(list(scheme.keys())).cast(scheme)
+        # return dataset
 
     def midm_cols(self, dataset : Dataset):
-        midm_cols = [col for col in dataset.column_names if col != "id"]
+        # TODO: don't hard code anything else than id.
+        # for now accept, since more complex schemes for midms are hard to concat
+        midm_cols = [col for col in dataset.column_names if col not in ["id"]]
         return midm_cols
 
     @abstractmethod
@@ -98,9 +114,9 @@ class Task(ABC):
         if isinstance(metadata, Iterable) and not isinstance(metadata, Dataset):
             metadata = Dataset.from_list(metadata)
         try:
-            midm = self.cast_midm(midm)
+            self.parse_midm_scheme(midm)
         except Exception as e:
-            raise ValueError(f"Error occurred while casting midm. {e}")
+            raise ValueError(f"Error occurred while parsing midm scheme. {e}")
         try:
             self.parse_metadata_scheme(metadata)
         except Exception as e:
