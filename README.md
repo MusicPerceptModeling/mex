@@ -1,8 +1,10 @@
 
-# TODO: port the benchmark suite to the new class structure, then remove this file and the corresponding test file
-# music_surprisal_benchmarks
+<!-- 
+# TODO: show API and addtionally show other benchmarks.
+ -->
+# MEX: Musical Expectation Benchmark Suite
 
-Installable package for IC benchmark tasks.
+Installable package for benchmarking computational models of musical expectation on different tasks.
 
 Current focus: an example benchmark that checks whether repetition lowers information content on SALAMI-style annotations. IDyOM consistency is also supported.
 
@@ -33,16 +35,25 @@ pip install ".[all]"
 ```
 
 ## Usage
+MEX impliments an API for running benchmarks and a cli build with [jsonargparse](https://jsonargparse.readthedocs.io).
 
-### Benchmark repetition
+### Preprocess data
+#### SALAMI
+CLI (with config):
+
+```bash
+python -m mex.cli --config config/preproc_salami.yaml
+```
+### Run task
+#### Reduction in MIDM with repetition 
 This repetition benchmark can be run on any compatible dataset; SALAMI is the example shown here.
 
 CLI (with config):
 
 ```bash
-python -m mex.cli --config config/benchmark_repetition.yaml benchmark
+python -m mex.cli --config config/benchmark_repetition_decrease_salami.yaml
 ```
-
+<!-- 
 API:
 
 ```python
@@ -68,13 +79,12 @@ results = repetition_decrease(
     time_offset_frame =  1 # for IC 1 for entropy 0 
 )
 
-```
+``` -->
 
 For a full runnable example, see [`demo.ipynb`](demo.ipynb).
 
-### Benchmark ...
 
-## Baselines
+<!-- ## Baselines
 
 The repository currently provides two baseline models:
 
@@ -108,27 +118,27 @@ Output columns:
 
 - `AudioIC`: `ic`
 - `PAAudioIC` IC: `ic_<noise_level>`
-- `PAAudioIC` entropy: `entr_<noise_level>`
+- `PAAudioIC` entropy: `entr_<noise_level>` -->
 
 ## Contributing
-We warmly welcome adding benchmarks. 
-This, usually, requires implimenting a function that takes two [Huggingface `Dataset`](https://github.com/huggingface/datasets/) arguments:
-- `model_outputs`,
-- `metadata_ds`
-
-See the current benchmark entry point: [`repetition_decrease`](mex/benchmark_repetition_test.py#L341).
-
-`model_outputs` usually contains at least two columns: 
+We warmly welcome contributions to MEX in the form of new tasks or datasets for existing tasks.
+### Adding a task 
+This requires implimenting a [`Task`](./mex/benchmark.py).
+See the implimentation of [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py).
+`Task`s impliment `_run_task`, which requires `midm` and `metadata` to follow a specific structure. 
+`midm` usually contains at least two columns: 
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
-`metadata_ds` usually contains an `id` column for matching predictions and audio data.
+`metadata` usually contains an `id` column for matching predictions and audio data and addtional data. To ensure that the provided metadata is compatible with the task `parse_metadata_scheme_fn: type[MetaData] | Callable[[Dataset], Dataset]` can be parsed to `Task`'s constructor. Parsing a `MetaData` `class` is pratical in cases where a dataset is shared between multiple tasks (e.g.,  [`SegmentMetaData`](./mex/metadata/segment.py) is used both in [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py) and [`SegmentBoundaryTask`](./mex/task/segment_boundary.py)).
+### Adding a dataset to an existing task
+To facilitate running the same task on different datasets, it is encouraged to contribute datasets in the form of an abstract implimentation of [`MetaData`](./mex/benchmark.py) (e.g., [`SegmentMetaData`](./mex/metadata/segment.py)) for shared parsing of metadata schemes which is implimented by another class that impliments the `_preprocess` method for preprocessing the dataset and `ds_name` for caching the preprocessed dataset (e.g., [`SalamiMetaData`](./mex/metadata/segment.py)).
+
 
 Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
-
-Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
-
-With the exception of the [`idyom_consistency`](mex/benchmark_idyom_corr_test.py#L148) audio files for benchmarks are not provided.
+<!--Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
+-->
+With the exception of the [`SessionMetaData`](./mex/metadata/symbolic.py) audio files for benchmarks are not provided.
 
 ## License
 

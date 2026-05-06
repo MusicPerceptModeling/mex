@@ -6,7 +6,7 @@ This project includes code adapted from external open-source projects.
 
 - Source repository: https://github.com/meinardmueller/libfmp
 - Source module context: `libfmp.c6.c6s1_peak_picking`
-- Local file: `ic_benchmark_suite/peak_picking.py`
+- Local file: `./mex/util/peak_picking.py`
 - License: MIT
 
 The following MIT license text applies to the reused/adapted libfmp code:
