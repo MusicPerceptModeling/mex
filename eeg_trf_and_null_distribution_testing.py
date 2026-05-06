@@ -1,19 +1,3 @@
-#NOTES MEETING 10/04 and 17/04
-#TO DO : compare the results with those obtained on SONG dataset (1-8 Hz) to check my implementation (IN PROGRESS), and the Bach dataset too 
-#TO DO (DONE) : implement more preprocessing on eeg, especially for openneuro dataset which is pretty raw ; channel rejection, substracting eye component in the EEG (check if there is an EOG channel) data and then filtering ; the filtering is the most important part, 1-8hz (theta and delta bands) is mostly what I am interested in.
-#TO DO (DONE): downsample the EEG to 64 Hz (or 32Hz),
-#TO DO : Mathias apparently didn't have to interpolate IC when doing the analysis (ask him he did it)!
-#TO DO (DONE - it actually makes things worse!): SSP could be used to eliminate the stationary noise from the MRI machine (only the first component currently eliminated) 
-#TO DO (DONE) : check if the envelope is itself significant to predict EEG, maybe think of other features to check
-#TO DO : currently there are delay boundary effects, regularize within the training set and remove the average level difference across the trials using the bias terms given by the trf ridge regression
-#NB: Giorgia didn't use banded_regularization #TO DO differentiate depending on the analysis : use banded reg for EEG channels, but standard reg was better for arousal significance...
-#TO DO (IN PROGRESS): elucidate the detail of shuffling epoch null distribution building for reliable final p-value of true IC signficiance 
-#TO DO : entropy is at the heart of a lot of neuroscience research - do the analyses on the entropy too (entropy in the predictive coding framework is simply the inverse of precision)
-#TO DO (DONE) : extend the task to the available behavioural data (valence and arousal) from openneuro ds002725 dataset
-#TO DO : to try and get signficiant EEG openneuro results test full model against only envelope baseline, checking the averaged enhancement among all channels (or all channels of the central temporal region if too much noise) and you test this against zero hyposthesis with paired t-test - on average !
-#TO DO : for the permutation use the mtrf one that is already coded or use its Giorgia-improved version
-#TO DO : send an email to giorgia explaining all the analyses in detail with the link to the git repo for the benchmark
-
 
 
 import numpy as np
