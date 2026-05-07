@@ -35,7 +35,7 @@ pip install ".[all]"
 ```
 
 ## Usage
-MEX impliments an API for running benchmarks and a cli build with [jsonargparse](https://jsonargparse.readthedocs.io).
+MEX implements an API for running benchmarks and a cli build with [jsonargparse](https://jsonargparse.readthedocs.io).
 
 ### Preprocess data
 #### SALAMI
@@ -123,16 +123,16 @@ Output columns:
 ## Contributing
 We warmly welcome contributions to MEX in the form of new tasks or datasets for existing tasks.
 ### Adding a task 
-This requires implimenting a [`Task`](./mex/benchmark.py).
-See the implimentation of [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py).
-`Task`s impliment `_run_task`, which requires `midm` and `metadata` to follow a specific structure. 
+This requires implementing a [`Task`](./mex/benchmark.py).
+See the implementation of [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py).
+`Task`s implement `_run_task`, which requires `midm` and `metadata` to follow a specific structure. 
 `midm` usually contains at least two columns: 
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
 `metadata` usually contains an `id` column for matching predictions and audio data and addtional data. To ensure that the provided metadata is compatible with the task `parse_metadata_scheme_fn: type[MetaData] | Callable[[Dataset], Dataset]` can be parsed to `Task`'s constructor. Parsing a `MetaData` `class` is pratical in cases where a dataset is shared between multiple tasks (e.g.,  [`SegmentMetaData`](./mex/metadata/segment.py) is used both in [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py) and [`SegmentBoundaryTask`](./mex/task/segment_boundary.py)).
 ### Adding a dataset to an existing task
-To facilitate running the same task on different datasets, it is encouraged to contribute datasets in the form of an abstract implimentation of [`MetaData`](./mex/benchmark.py) (e.g., [`SegmentMetaData`](./mex/metadata/segment.py)) for shared parsing of metadata schemes which is implimented by another class that impliments the `_preprocess` method for preprocessing the dataset and `ds_name` for caching the preprocessed dataset (e.g., [`SalamiMetaData`](./mex/metadata/segment.py)).
+To facilitate running the same task on different datasets, it is encouraged to contribute datasets in the form of an abstract implementation of [`MetaData`](./mex/benchmark.py) (e.g., [`SegmentMetaData`](./mex/metadata/segment.py)) for shared parsing of metadata schemes which is implemented by another class that implements the `_preprocess` method for preprocessing the dataset and `ds_name` for caching the preprocessed dataset (e.g., [`SalamiMetaData`](./mex/metadata/segment.py)).
 
 
 Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
