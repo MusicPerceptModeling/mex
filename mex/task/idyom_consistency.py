@@ -12,21 +12,25 @@ from ..metadata.symbolic import IDyOMMetaData
 
 
 class IDyOMConsistencyTask(Task):
-    def __init__(self):
+    def __init__(
+        self,
+        periode_frames : float,
+        remove_outliers: bool = False, # TODO: check what we do with 
+    ):
         super().__init__(IDyOMMetaData)
+        self.periode_frames = periode_frames
+        self.remove_outliers = remove_outliers
 
     def _run_task(
         self,
         midm : Dataset,
-        metadata: Dataset,
-        periode_frames : float,
-        remove_outliers: bool = False, # TODO: check what we do with 
+        metadata: Dataset
     ) -> PandasTestResult:
         df = self.idyom_corr(
             val_dataset=midm,
             idyom_ds=metadata,
-            periode_frames=periode_frames,
-            remove_outliers = remove_outliers
+            periode_frames=self.periode_frames,
+            remove_outliers=self.remove_outliers
         )
         return PandasTestResult(summary=df)
     def parse_midm_scheme(self, dataset: Dataset):

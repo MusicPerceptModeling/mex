@@ -243,13 +243,8 @@ def run_repetition_test(
 
 
 class RepetitionDecreaseTask(Task):
-    def __init__(self):
-        super().__init__(SegmentMetaData)
-
-    def _run_task(
+    def __init__(
         self,
-        midm : Dataset,
-        metadata: Dataset,
         periode_frames : float,
         time_offset_frame : int = 0,
         normalize: bool = True,
@@ -257,7 +252,23 @@ class RepetitionDecreaseTask(Task):
         merge_variations = False,
         num_proc = None,
         repetition_modes = [['all'], ['first'],],
+
+        ):
+        super().__init__(SegmentMetaData)
+        self.periode_frames = periode_frames
+        self.time_offset_frame = time_offset_frame
+        self.normalize = normalize
+        self.exclude_segments = exclude_segments
+        self.merge_variations = merge_variations
+        self.num_proc = num_proc
+        self.repetition_modes = repetition_modes
+
+    def _run_task(
+        self,
+        midm : Dataset,
+        metadata: Dataset
     ) -> PandasTestResult:
+        
         ids_union = set(midm["id"]).intersection(set(metadata["id"]))
         metadata = metadata.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
         midm = midm.sort("id").filter(lambda id: id in ids_union, input_columns=["id"])
@@ -271,14 +282,14 @@ class RepetitionDecreaseTask(Task):
         seg_df = _extract_segment_df_from_nll_dataset(
                 nll_dataset=merged,
                 segment_names=annotation_names,
-                period_frames=periode_frames,
+                period_frames=self.periode_frames,
                 midms=midm_cols,
-                time_offset_frame=time_offset_frame,
-                normalize=normalize,
-                exclude_segments=exclude_segments,
-                merge_variations=merge_variations,
-                num_proc=num_proc,
+                time_offset_frame=self.time_offset_frame,
+                normalize=self.normalize,
+                exclude_segments=self.exclude_segments,
+                merge_variations=self.merge_variations,
+                num_proc=self.num_proc,
             )
             
-        df = run_repetition_test(seg_df, midm_column="midm_column", repetition_modes=repetition_modes)
+        df = run_repetition_test(seg_df, midm_column="midm_column", repetition_modes=self.repetition_modes)
         return PandasTestResult(summary=df)

@@ -63,13 +63,8 @@ def calc_peaks(ex, hierarchy_levels, periode_frames, window_boundary_matching, t
                         res.setdefault('npreds', []).append(len(peak))
     return res_all
 class SegmentBoundaryTask(Task):
-    def __init__(self):
-        super().__init__(SegmentMetaData)
-
-    def _run_task(
+    def __init__(
         self,
-        midm : Dataset,
-        metadata: Dataset,
         periode_frames : float,
         peak_picking_kwargs :List[dict] = [dict(std=5.0)],
         time_offset_frame : int = 0,
@@ -78,18 +73,33 @@ class SegmentBoundaryTask(Task):
         hierarchy_levels = ['lowercase', 'uppercase', 'functions'],
         num_proc = None,
         n_splits: int = 5,
+    ):
+        super().__init__(SegmentMetaData)
+        self.periode_frames = periode_frames
+        self.peak_picking_kwargs = peak_picking_kwargs
+        self.time_offset_frame = time_offset_frame
+        self.window_boundary_matching = window_boundary_matching
+        self.repetition_modes = repetition_modes
+        self.hierarchy_levels = hierarchy_levels
+        self.num_proc = num_proc
+        self.n_splits = n_splits
+
+    def _run_task(
+        self,
+        midm : Dataset,
+        metadata: Dataset,
     ) -> PandasTestResult:
         df = self.segment_boundary_alignment(
             midm=midm,
             metadata=metadata,
-            periode_frames=periode_frames,
-            peak_picking_kwargs=peak_picking_kwargs,
-            time_offset_frame=time_offset_frame,
-            window_boundary_matching=window_boundary_matching,
-            repetition_modes=repetition_modes,
-            hierarchy_levels=hierarchy_levels,
-            num_proc=num_proc,
-            n_splits=n_splits
+            periode_frames=self.periode_frames,
+            peak_picking_kwargs=self.peak_picking_kwargs,
+            time_offset_frame=self.time_offset_frame,
+            window_boundary_matching=self.window_boundary_matching,
+            repetition_modes=self.repetition_modes,
+            hierarchy_levels=self.hierarchy_levels,
+            num_proc=self.num_proc,
+            n_splits=self.n_splits
         )
         return PandasTestResult(summary=df)
     @classmethod
