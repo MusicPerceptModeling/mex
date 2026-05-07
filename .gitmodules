@@ -1,0 +1,3 @@
+[submodule "hf_datasets_mex"]
+	path = hf_datasets_mex
+	url = git@hf.co:datasets/muthissar/music_surprisal_benchmarks
