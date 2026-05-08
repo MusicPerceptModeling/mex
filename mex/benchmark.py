@@ -12,12 +12,12 @@ from .dataset_provider import DatasetProvider
 class Result(ABC):
     def save(self, path: str):
         pass
-    
+
     @classmethod
     @abstractmethod
     def load(cls, path: str) -> 'Result':
         pass
-    
+
     @abstractmethod
     def __str__(self) -> str:
         pass
@@ -37,38 +37,41 @@ class PandasTestResult:
 
 @dataclass
 class MetaData(ABC):
-    dataset_provider: DatasetProvider = field(default_factory=DatasetProvider())
+    # TODO: this is not gonna be set correctly when running the cli, i.e.
+    # not the same like in the cli object set from config
+    # dataset_provider: DatasetProvider = field(default_factory=DatasetProvider())
     @abstractmethod
-    def _preprocess(self) -> Dataset:
+    def _preprocess(self, cache_dir: str = None) -> Dataset:
         pass
     @property
     @abstractmethod
     def ds_name(self) -> str:
         pass
-    @property
-    def cache_name(self) -> str:
-        return self.dataset_provider.cache_dir + "/" + self.ds_name
-    def preprocess(self):
-        meta_data = self._preprocess()
+    # @property
+    # def cache_name(self) -> str:
+    #     return self.dataset_provider.cache_dir + "/" + self.ds_name
+    def preprocess(self, dataset_provider: DatasetProvider):
+        meta_data = self._preprocess(dataset_provider.cache_dir)
         try:
             self.parse_metadata_scheme(meta_data)
         except Exception as e:
             warn(f"Could not parse metadata. Failed with {e}")
-        self.dataset_provider.persist_ds(meta_data, ds_name=self.cache_name, hub_upload=False)
+        dataset_provider.persist_ds(meta_data, ds_name=self.ds_name)
     @classmethod
     def parse_metadata_scheme(cls, dataset: Dataset):
         pass
-    def load(self) -> Dataset:
+    def load(self, dataset_provider: DatasetProvider) -> Dataset:
         try:
-            ds = self.dataset_provider.get_ds(self.cache_name)
+            # ds_name = self.ds_name if from_hub else self.cache_name
+            ds = dataset_provider.get_ds(self.ds_name)
             self.parse_metadata_scheme(ds)
             return ds
         except Exception as e:
-            raise ValueError(f"Could not load metadata dataset {self.cache_name}. Error: {e}. Consider running preprocess first.")
+            raise ValueError(f"Could not load metadata dataset {self.ds_name}. Error: {e}. Consider running preprocess first.")
 
 class Task(ABC):
     def __init__(self, parse_metadata_scheme_fn: type[MetaData] | Callable[[Dataset], Dataset] = MetaData):
-        self.parse_metadata_scheme = parse_metadata_scheme_fn.parse_metadata_scheme if isinstance(parse_metadata_scheme_fn, type) and issubclass(parse_metadata_scheme_fn, MetaData) else parse_metadata_scheme_fn    
+        self.parse_metadata_scheme = parse_metadata_scheme_fn.parse_metadata_scheme if isinstance(parse_metadata_scheme_fn, type) and issubclass(parse_metadata_scheme_fn, MetaData) else parse_metadata_scheme_fn
     @classmethod
     def _midm_scheme(cls, labels: List[str]) -> Features:
         return Features(
@@ -83,7 +86,7 @@ class Task(ABC):
         if not midm_cols:
             raise ValueError("labels must not be empty")
         scheme = self._midm_scheme(midm_cols)
-        
+
         # assert scheme == {feature: dataset.features[feature] for feature in scheme}, f"Dataset features {dataset.features} do not match required features {scheme} for midm."
         dataset.select_columns(list(scheme.keys())).cast(scheme)
         # return dataset
@@ -105,7 +108,7 @@ class Task(ABC):
         self,
         midm: Iterable | Dataset,
         # NOTE: alternatively, metadata could be part of initializer.
-        metadata: Iterable | Dataset, 
+        metadata: Iterable | Dataset,
         **kwargs
     ) -> Result:
         if isinstance(midm, Iterable) and not isinstance(midm, Dataset):

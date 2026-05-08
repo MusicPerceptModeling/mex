@@ -1,5 +1,5 @@
 
-<!-- 
+<!--
 # TODO: show API and addtionally show other benchmarks.
  -->
 # MEX: Musical Expectation Benchmark Suite
@@ -24,8 +24,8 @@ pip install ".[baselines]"
 # extras
 pip install ".[extras]"
 
-# tests
-pip install ".[tests]"
+# development
+pip install ".[dev]"
 
 # demo
 pip install ".[demo]"
@@ -45,7 +45,7 @@ CLI (with config):
 python -m mex.cli --config config/preproc_salami.yaml
 ```
 ### Run task
-#### Reduction in MIDM with repetition 
+#### Reduction in MIDM with repetition
 This repetition benchmark can be run on any compatible dataset; SALAMI is the example shown here.
 
 CLI (with config):
@@ -53,7 +53,7 @@ CLI (with config):
 ```bash
 python -m mex.cli --config config/benchmark_repetition_decrease_salami.yaml
 ```
-<!-- 
+<!--
 API:
 
 ```python
@@ -76,7 +76,7 @@ results = repetition_decrease(
     model_outputs=model_outputs,
     metadata_ds=metadata_ds,
     periode_frames = 0.0928798185941,
-    time_offset_frame =  1 # for IC 1 for entropy 0 
+    time_offset_frame =  1 # for IC 1 for entropy 0
 )
 
 ``` -->
@@ -122,11 +122,11 @@ Output columns:
 
 ## Contributing
 We warmly welcome contributions to MEX in the form of new tasks or datasets for existing tasks.
-### Adding a task 
+### Adding a task
 This requires implimenting a [`Task`](./mex/benchmark.py).
 See the implimentation of [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py).
-`Task`s impliment `_run_task`, which requires `midm` and `metadata` to follow a specific structure. 
-`midm` usually contains at least two columns: 
+`Task`s impliment `_run_task`, which requires `midm` and `metadata` to follow a specific structure.
+`midm` usually contains at least two columns:
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
