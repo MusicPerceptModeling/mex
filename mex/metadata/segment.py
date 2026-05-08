@@ -39,11 +39,11 @@ class SegmentMetaData(MetaData):
 
 
 class SalamiMetaData(SegmentMetaData):
-    def __init__(self, dataset_provider : DatasetProvider = DatasetProvider(), salami_root: Path = None,  n_proc: int | None = None):
-        super().__init__(dataset_provider=dataset_provider)
+    def __init__(self, salami_root: Path = None,  n_proc: int | None = None):
+        super().__init__()
         self.salami_root = salami_root
         self.n_proc = n_proc
-    
+
     @classmethod
     def _parse_annotation_file(cls, path_str: str) -> dict:
         pattern = re.compile(r"^.*/(?P<id>\d+)/parsed/textfile(?P<aid>[^_/]+)_(?P<level>functions|uppercase|lowercase)\.txt$")
@@ -67,7 +67,7 @@ class SalamiMetaData(SegmentMetaData):
             "level": match.group("level"),
             "segment": seg_dict,
         }
-    
+
     @classmethod
     def _parsed_features(cls) -> Features:
         return Features(
@@ -82,7 +82,7 @@ class SalamiMetaData(SegmentMetaData):
                 },
             }
         )
-    
+
     @classmethod
     def read_annotations_hf(
         cls,
@@ -137,10 +137,10 @@ class SalamiMetaData(SegmentMetaData):
     def ds_name(self):
         return 'salami'
 
-    def _preprocess(self):
+    def _preprocess(self, cache_dir: str = None) -> Dataset:
         assert self.salami_root is not None, "salami_root must be provided for preprocessing SalamiMetaData"
         return self.read_annotations_hf(
             folder=self.salami_root,
-            cache_dir=self.dataset_provider.cache_dir,
+            cache_dir=cache_dir,
             n_proc=self.n_proc
         )

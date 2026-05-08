@@ -24,7 +24,7 @@ dependencies = [
 all = [
     "mex[baselines]",
     "mex[extras]",
-    "mex[tests]",
+    "mex[dev]",
     "mex[demo]",
 ]
 
@@ -40,8 +40,10 @@ extras = [
   "soundfile",
 ]
 
-tests = [
-  "pytest"
+dev = [
+  "pytest",
+  "pre-commit",
+  "pyyaml",
 ]
 
 demo = [

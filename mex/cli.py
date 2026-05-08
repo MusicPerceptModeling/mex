@@ -22,8 +22,8 @@ def extract_numeric_stem_id(path: str) -> int:
 class BenchmarkSuite:
     dataset_provider: DatasetProvider
     def preprocess_metadata(self, metadata: MetaData):
-        metadata.preprocess()
-        
+        metadata.preprocess(self.dataset_provider)
+
     def baseline(self, model: Baseline, audio_ds : str | datasets.Dataset , cache_name : str, val: str = 'ic', hub_upload: bool = False):
         if isinstance(audio_ds, str):
             audio_ds = self.dataset_provider.get_ds(audio_ds)
@@ -35,23 +35,23 @@ class BenchmarkSuite:
 
     def benchmark(self, task: Task, midm: str | List[str], metadata: MetaData | str, task_kwargs: dict = {}, out_path: str = None, print_result: bool = True):
         if isinstance(midm, str):
-            midm = self.dataset_provider.get_ds(midm)
+            midm = self.dataset_provider.get_ds(midm, use_cache=False)
         else:
-            midm_ = [self.dataset_provider.get_ds(midm[0])]
+            midm_ = [self.dataset_provider.get_ds(midm[0],use_cache=False)]
             for cm in midm[1:]:
-                midm_.append(self.dataset_provider.get_ds(cm).remove_columns(['Time', 'id'])) # TODO: remove time
+                midm_.append(self.dataset_provider.get_ds(cm, use_cache=False).remove_columns(['Time', 'id'])) # TODO: remove time
             midm = datasets.concatenate_datasets(midm_, axis=1)
         if isinstance(metadata, str):
             metadata = self.dataset_provider.get_ds(metadata)
         elif isinstance(metadata, MetaData):
-            metadata = metadata.load()
+            metadata = metadata.load(dataset_provider=self.dataset_provider)
         # TODO: possibly but the task_kwargs in the constructor instead
         result = task.run_task(midm=midm, metadata=metadata, **task_kwargs)
         if out_path is not None:
             result.save(path=out_path)
         if print_result:
             print(result)
-    
+
     def benchmark_all(self, metric: str, cache_model_segment : str, ds_segment: str, cache_model_idyom: str, ds_idyom: str, periode_frames: float, time_offset_frame: int) :
         raise NotImplementedError("This is a placeholder for a function that runs all benchmarks. It has to be ported to new class structure.")
         model_outputs_segment = self.dataset_provider.get_ds(cache_model_segment)

@@ -1,5 +1,5 @@
 benchmark:
-  task: 
+  task:
     class_path: SegmentBoundaryTask
     init_args:
       periode_frames: 0.0928798185941

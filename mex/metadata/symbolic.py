@@ -57,14 +57,13 @@ class IDyOMMetaData(MetaData):
     def __init__(
         self,
         id_path_extractor: Callable[[str], int|str],
-        dataset_provider : DatasetProvider = DatasetProvider(),
         idyom_dat_dir: str = None,
         midi_dir: str = None,
         num_proc: int | None = None,
         instruments: list[str]  = None,
         n_midis: int | None = None
     ):
-        super().__init__(dataset_provider=dataset_provider)
+        super().__init__()
         self.idyom_dat_dir = idyom_dat_dir
         self.midi_dir = midi_dir
         self.id_path_extractor = id_path_extractor
@@ -135,7 +134,7 @@ class IDyOMMetaData(MetaData):
 
         Returns per-session rows with: id, idyom_ic, idyom_onset.
         """
-        # TODO: make sure that onsets for entropy is correct 
+        # TODO: make sure that onsets for entropy is correct
         idyom_dat_dir = Path(idyom_dat_dir)
         dat_paths = [str(p) for p in sorted(idyom_dat_dir.glob("*.dat"))]
 
@@ -159,7 +158,7 @@ class IDyOMMetaData(MetaData):
                 idyom_entropy=("entropy", list)
             )
         )
-        # df_idyom_session = ds_idyom_session.to_pandas().sort_values(["id", "note.id"]) 
+        # df_idyom_session = ds_idyom_session.to_pandas().sort_values(["id", "note.id"])
         ids = df_idyom_session.id.unique()
         ids = ids[:n_midis]
         df_idyom_session = df_idyom_session[df_idyom_session.id.isin(ids)]
@@ -176,12 +175,12 @@ class IDyOMMetaData(MetaData):
         session_onsets_ds = Dataset.from_generator(cls._iter_midis, gen_kwargs=gen_kwargs, cache_dir=cache_dir, num_proc=num_proc)
         concat = session_onsets_ds.add_column("idyom_ic", df_idyom_session["idyom_ic"]).add_column("idyom_entropy", df_idyom_session["idyom_entropy"])
         return concat
-    def _preprocess(self):
+    def _preprocess(self, cache_dir: str = None) -> Dataset:
         return self.idyom_ds(
             idyom_dat_dir=self.idyom_dat_dir,
             midi_dir=self.midi_dir,
             id_path_extractor=self.id_path_extractor,
-            cache_dir=self.dataset_provider.cache_dir,
+            cache_dir=cache_dir,
             num_proc=self.num_proc,
             instruments=self.instruments,
             n_midis=self.n_midis,
@@ -198,11 +197,10 @@ class IDyOMMetaData(MetaData):
             no_missing_collumns = True
         assert no_missing_collumns, "Some required columns are missing from the dataset"
         dataset.select_columns(list(scheme.keys())).cast(Features(scheme))
-        
+
 class SessionIDyOMMetaData(IDyOMMetaData):
     def __init__(
         self,
-        dataset_provider : DatasetProvider = DatasetProvider(),
         idyom_dat_dir: str = None,
         midi_dir: str = None,
         num_proc: int | None = None,
@@ -213,11 +211,10 @@ class SessionIDyOMMetaData(IDyOMMetaData):
             idyom_dat_dir=idyom_dat_dir,
             midi_dir=midi_dir,
             id_path_extractor = lambda x: int(Path(x).stem[len("sessiontune"):]),
-            dataset_provider=dataset_provider,
             num_proc=num_proc,
             instruments=instruments,
             n_midis=n_midis,
-        )    
+        )
     @property
     def ds_name(self) -> str:
         return "session_idyom"
