@@ -17,9 +17,13 @@ def read_config_revision() -> str:
 
 
 def read_submodule_revision() -> str:
+    submodule_path = ROOT / SUBMODULE
+    if not (submodule_path / ".git").exists():
+        raise RuntimeError(f"Submodule {SUBMODULE} not initialized. Run: git submodule update --init --recursive")
+    
     staged_revision = subprocess.check_output(["git", "rev-parse", f":{SUBMODULE}"], text=True).strip()
-    local_revision = subprocess.check_output(["git", "-C", str(ROOT / SUBMODULE), "rev-parse", "HEAD"], text=True).strip()
-    dirty = bool(subprocess.check_output(["git", "-C", str(ROOT / SUBMODULE), "status", "--porcelain"], text=True).strip())
+    local_revision = subprocess.check_output(["git", "-C", str(submodule_path), "rev-parse", "HEAD"], text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "-C", str(submodule_path), "status", "--porcelain"], text=True).strip())
     return staged_revision, local_revision, dirty
 
 
