@@ -18,9 +18,8 @@ class Result(ABC):
     def load(cls, path: str) -> 'Result':
         pass
 
-    @abstractmethod
     def __str__(self) -> str:
-        pass
+        return str(self)
 
 class PandasTestResult:
     def __init__(self, summary: pd.DataFrame):

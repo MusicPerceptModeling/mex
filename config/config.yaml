@@ -2,5 +2,4 @@ dataset_provider:
     cache_dir: null
     hf_root: 'muthissar/music_surprisal_benchmarks'
     hf_revision: '0af6776dc262f9e2f39aed672e15753ceb97a620'
-    hf_upload: true
-
+    hf_upload: false

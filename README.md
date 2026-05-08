@@ -11,14 +11,19 @@ Current focus: an example benchmark that checks whether repetition lowers inform
 More benchmark tasks will be added later.
 
 ## Installation
-
-PyTorch is required for baselines. Install it first: https://pytorch.org/get-started/locally/
-
+<!-- TODO: update when the repo names changes --->
+### Getting
+```
+git clone https://github.com/muthissar/music_surprisal_benchmarks.git
+cd music_surprisal_benchmarks
+```
+### Installing
 ```bash
 # core
 pip install .
 
 # baselines
+# First install PyTorch: https://pytorch.org/get-started/locally/
 pip install ".[baselines]"
 
 # extras
@@ -37,12 +42,37 @@ pip install ".[all]"
 ## Usage
 MEX impliments an API for running benchmarks and a cli build with [jsonargparse](https://jsonargparse.readthedocs.io).
 
-### Preprocess data
+For documentation on the API see [`./demo.ipynb`](./demo.ipynb).
+For documentation on the cli, run 
+```bash
+python -m mex.cli --help
+```
+The cli stores default application parameters in [`./config/config.yaml`](./config/config.yaml), that can be overwritten by passing command line parameters, e.g.
+ ```bash
+python -m mex.cli --dataset_provider.cache_dir=./cache --help
+```
+
+MEX stores Benchmark assets for standard datasets and baselines as [`Dataset`](https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset)s in the huggingface hub repository [https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
+<!--Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
+-->
+With the exception of the [`SessionMetaData`](./mex/metadata/symbolic.py) and [`NHSSMetaData`]() audio files for benchmarks are not provided.
+
+
+### Preprocess metadata
+(Skip if running with preprocessed datasets from the hub)
 #### SALAMI
 CLI (with config):
 
 ```bash
 python -m mex.cli --config config/preproc_salami.yaml
+```
+### Calculate MIDMs
+(skip if using own model, or running with precomputed baseline values from the hub)
+
+CLI (with config):
+
+```bash
+python -m mex.cli --config config/baseline_audioic_session.yaml
 ```
 ### Run task
 #### Reduction in MIDM with repetition
@@ -53,6 +83,8 @@ CLI (with config):
 ```bash
 python -m mex.cli --config config/benchmark_repetition_decrease_salami.yaml
 ```
+
+
 <!--
 API:
 
@@ -80,8 +112,6 @@ results = repetition_decrease(
 )
 
 ``` -->
-
-For a full runnable example, see [`demo.ipynb`](demo.ipynb).
 
 
 <!-- ## Baselines
@@ -122,6 +152,9 @@ Output columns:
 
 ## Contributing
 We warmly welcome contributions to MEX in the form of new tasks or datasets for existing tasks.
+
+Ensure that mex was installed with dev dependencies: `pip install ".[dev]"`.
+
 ### Adding a task
 This requires implimenting a [`Task`](./mex/benchmark.py).
 See the implimentation of [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py).
@@ -130,15 +163,24 @@ See the implimentation of [`RepetitionDecreaseTask`](./mex/task/repetition_decre
 - audio file `id`
 - frame-based model predictions (e.g. *Information Content*)
 
-`metadata` usually contains an `id` column for matching predictions and audio data and addtional data. To ensure that the provided metadata is compatible with the task `parse_metadata_scheme_fn: type[MetaData] | Callable[[Dataset], Dataset]` can be parsed to `Task`'s constructor. Parsing a `MetaData` `class` is pratical in cases where a dataset is shared between multiple tasks (e.g.,  [`SegmentMetaData`](./mex/metadata/segment.py) is used both in [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py) and [`SegmentBoundaryTask`](./mex/task/segment_boundary.py)).
+`metadata` usually contains an `id` column for matching predictions and audio data and addtional data. To ensure that the provided metadata is compatible with the task `parse_metadata_scheme_fn: type[MetaData] | Callable[[Dataset], Dataset]` can be passed to `Task`'s constructor. Passing a `MetaData` `class` (see below) is pratical in cases where a dataset is shared between multiple tasks (e.g.,  [`SegmentMetaData`](./mex/metadata/segment.py) is used both in [`RepetitionDecreaseTask`](./mex/task/repetition_decrease.py) and [`SegmentBoundaryTask`](./mex/task/segment_boundary.py)).
 ### Adding a dataset to an existing task
+#### Adding a MetaData
 To facilitate running the same task on different datasets, it is encouraged to contribute datasets in the form of an abstract implimentation of [`MetaData`](./mex/benchmark.py) (e.g., [`SegmentMetaData`](./mex/metadata/segment.py)) for shared parsing of metadata schemes which is implimented by another class that impliments the `_preprocess` method for preprocessing the dataset and `ds_name` for caching the preprocessed dataset (e.g., [`SalamiMetaData`](./mex/metadata/segment.py)).
 
 
-Benchmark assets for tested datasets/baselines are provided as [`Dataset`s from the huggingface hub](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
-<!--Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
--->
-With the exception of the [`SessionMetaData`](./mex/metadata/symbolic.py) audio files for benchmarks are not provided.
+#### Adding precomputed cache to the hub
+Running `preprocess_metadata` with `--dataset_provider.hf_upload=true` writes the `MetaData` assets to the hf datasets git submodule [`hf_datasets_mex`](./hf_datasets_mex/). When updating `MetaData` implimentations it is recommended to commit both [`./hf_datasets_mex`](./hf_datasets_mex/) and [`.`]('./') to keep versions compatible, e.g.:  
+```
+python -m mex.cli --dataset_provider.hf_upload=true --config config/preproc_salami.yaml
+
+git -C hf_datasets_mex add salami
+git -C hf_datasets_mex commit -m "Updated SALAMI dataset"
+
+git add hf_datasets_mex
+git commit -m "Updated hf_datasets_mex submodule pointer"
+
+```
 
 ## License
 
