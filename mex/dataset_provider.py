@@ -2,7 +2,6 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import datasets
-from huggingface_hub import HfApi
 from platformdirs import user_cache_dir
 
 from mex.util.hf import update_readme_config_entry

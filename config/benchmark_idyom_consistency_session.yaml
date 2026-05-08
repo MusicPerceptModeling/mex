@@ -9,5 +9,5 @@ benchmark:
   midm: 'cache/metrics/session_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5'
   # cache_model: 'cache/metrics/session_audioic_entropy_mc32'
   # cache_model: 'cache/metrics/session_audioic_ic'
-  metadata: IDyOMMetaData #cache/datasets/session_ds_entropy
+  metadata: SessionIDyOMMetaData #cache/datasets/session_ds_entropy
   out_path: "idyom_task.parquet"
