@@ -5,6 +5,9 @@ import datasets
 from huggingface_hub import HfApi
 from platformdirs import user_cache_dir
 
+from mex.util.hf import update_readme_config_entry
+
+
 @dataclass
 class DatasetProvider:
     cache_dir : str =  None
@@ -31,8 +34,11 @@ class DatasetProvider:
     def persist_ds(self, ds : datasets.Dataset, ds_name: str, use_cache=True):
         if self.hf_upload:
             # NOTE: managed by gitsubmodule
-            local_file = Path('hf_datasets_mex', ds_name, 'train.parquet')
+            path_within_repo = ds_name
+            local_file = Path('hf_datasets_mex', path_within_repo, 'train.parquet')
             ds.to_parquet(local_file)
+            update_readme_config_entry(config_name=ds_name, data_dir=path_within_repo, readme_path=Path('hf_datasets_mex', 'README.md'))
+            
         else:
             # ds.to_parquet(Path(self.cache_dir, ds_name, 'train.parquet'))
             ds_name = f"{self.cache_dir}/{ds_name}" if use_cache else ds_name

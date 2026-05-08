@@ -43,6 +43,7 @@ extras = [
 dev = [
   "pytest",
   "pre-commit",
+  "pyyaml",
 ]
 
 demo = [

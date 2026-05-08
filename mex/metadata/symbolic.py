@@ -57,14 +57,13 @@ class IDyOMMetaData(MetaData):
     def __init__(
         self,
         id_path_extractor: Callable[[str], int|str],
-        dataset_provider : DatasetProvider = DatasetProvider(),
         idyom_dat_dir: str = None,
         midi_dir: str = None,
         num_proc: int | None = None,
         instruments: list[str]  = None,
         n_midis: int | None = None
     ):
-        super().__init__(dataset_provider=dataset_provider)
+        super().__init__()
         self.idyom_dat_dir = idyom_dat_dir
         self.midi_dir = midi_dir
         self.id_path_extractor = id_path_extractor
@@ -202,7 +201,6 @@ class IDyOMMetaData(MetaData):
 class SessionIDyOMMetaData(IDyOMMetaData):
     def __init__(
         self,
-        dataset_provider : DatasetProvider = DatasetProvider(),
         idyom_dat_dir: str = None,
         midi_dir: str = None,
         num_proc: int | None = None,
@@ -213,7 +211,6 @@ class SessionIDyOMMetaData(IDyOMMetaData):
             idyom_dat_dir=idyom_dat_dir,
             midi_dir=midi_dir,
             id_path_extractor = lambda x: int(Path(x).stem[len("sessiontune"):]),
-            dataset_provider=dataset_provider,
             num_proc=num_proc,
             instruments=instruments,
             n_midis=n_midis,

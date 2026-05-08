@@ -3,7 +3,3 @@ preprocess_metadata:
         class_path: SalamiMetaData
         init_args:
             salami_root: "/opt/datasets/fs/salami"
-            # dataset_provider:
-            #     # cache_dir: './cache_test'
-            #     cache_dir: null
-    # hub_upload: true
