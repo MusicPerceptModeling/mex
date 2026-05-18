@@ -26,14 +26,117 @@ class NeuralEncoding(Task):
         tmin: float = -0.1,
         tmax: float = 0.7,
         use_banded: bool = False,
-        n_perms: int = None
+        n_perms: int = None,
+        midm_column: str = "ic" #default is 'ic', but allows 'entropy', 'typicality', etc.
     ):
-        # Register the expected metadata schema
-        super().__init__(EEGMetaData)
+        super().__init__(NeuralEncodingMetaData)
         self.tmin = tmin
         self.tmax = tmax
         self.use_banded = use_banded
         self.n_perms = n_perms
+        self.midm_column = midm_column #storing the feature name
+
+    @staticmethod
+    def compare_direct_models(stimuli_list, eeg_list, fs, use_banded=False):
+        tmin, tmax = -0.1, 0.7
+        k_folds = -1
+        regularization = np.logspace(-1, 6, 8)
+        trf = TRF(direction=1)
+
+        # --- Baseline model (Energy only) ---
+        baseline_stimuli = [stim[:, 0:1] for stim in stimuli_list]
+        print("Fitting Baseline Model (Energy only)...")
+        r_base, best_lambdas_base = nested_crossval(
+            trf, baseline_stimuli, eeg_list, fs, tmin, tmax, regularization,
+            k=k_folds, average=True, verbose=False
+        )
+        opt_lambda_env = np.median(best_lambdas_base)
+
+        r_base = crossval(
+            trf, baseline_stimuli, eeg_list, fs, tmin, tmax, opt_lambda_env,
+            k=k_folds, average=False, verbose=False
+        )
+        if r_base.ndim == 2:
+            r_base = np.mean(r_base, axis=0)
+        z_base = fisher_z_transform(r_base)
+        print(f'Best energy-only lambda: {opt_lambda_env}')
+
+        # --- Full model (Energy + IC) ---
+        if use_banded:
+            print("Fitting Full Model with BANDED Regularization (Manual List Grid Search)...")
+            best_r = -np.inf
+            opt_lambda_full = [1.0, 1.0]
+            n_epochs = len(stimuli_list)
+
+            #reg_env = np.logspace(0, 4, 5)
+            reg_env = np.logspace(-1, 3, 10)
+            #reg_ic = np.logspace(-1, 3, 5)
+            reg_ic = np.logspace(-1, 3, 10)
+
+            for l_env in reg_env:
+                for l_ic in reg_ic:
+                    fold_rs = []
+                    for i in range(n_epochs):
+                        val_stim = stimuli_list[i]
+                        val_eeg = eeg_list[i]
+
+                        train_stim = [stimuli_list[j] for j in range(n_epochs) if j != i]
+                        train_eeg = [eeg_list[j] for j in range(n_epochs) if j != i]
+
+                        trf_temp = TRF(direction=1)
+
+                        trf_temp.train(
+                            train_stim, train_eeg, fs, tmin, tmax,
+                            regularization=[l_env, l_ic], bands=[1, 1]
+                        )
+
+                        _, r = trf_temp.predict(val_stim, val_eeg)
+                        fold_rs.append(np.mean(r))
+
+                    mean_grid_r = np.mean(fold_rs)
+                    if mean_grid_r > best_r:
+                        best_r = mean_grid_r
+                        opt_lambda_full = [l_env, l_ic]
+
+            print(f'Best banded lambdas [Env, IC]: {opt_lambda_full}')
+
+            # Final LOO CV with the optimal lambdas
+            final_rs = []
+            for i in range(n_epochs):
+                val_stim = stimuli_list[i]
+                val_eeg = eeg_list[i]
+
+                train_stim = [stimuli_list[j] for j in range(n_epochs) if j != i]
+                train_eeg = [eeg_list[j] for j in range(n_epochs) if j != i]
+
+                trf_final = TRF(direction=1)
+                trf_final.train(
+                    train_stim, train_eeg, fs, tmin, tmax,
+                    regularization=opt_lambda_full, bands=[1, 1]
+                )
+                _, r = trf_final.predict(val_stim, val_eeg)
+                final_rs.append(r)
+
+            r_full = np.mean(final_rs, axis=0)
+
+        else:
+            # Standard Ridge Fallback
+            r_full, best_lambdas_full = nested_crossval(
+                trf, stimuli_list, eeg_list, fs, tmin, tmax, regularization,
+                k=k_folds, average=True, verbose=False
+            )
+            opt_lambda_full = np.median(best_lambdas_full)
+            r_full = crossval(
+                trf, stimuli_list, eeg_list, fs, tmin, tmax, opt_lambda_full,
+                k=k_folds, average=False, verbose=False
+            )
+            if r_full.ndim == 2:
+                r_full = np.mean(r_full, axis=0)
+
+        z_full = fisher_z_transform(r_full)
+        delta_z = z_full - z_base
+
+        return z_full, z_base, delta_z, opt_lambda_full
 
     def _run_task(self, midm: Dataset, metadata: Dataset, **kwargs) -> 'NeuralEncodingResult':
         """
@@ -43,7 +146,9 @@ class NeuralEncoding(Task):
         #merge the model outputs with the EEG metadata based on unique 'id'
         midm_df = midm.to_pandas()
         meta_df = metadata.to_pandas()
-        merged_df = pd.merge(midm_df, meta_df, on="id")
+        
+        # Merge using 'id' from midm (e.g. "trial_01") and 'stimulus_id' from meta (e.g. "trial_01")
+        merged_df = pd.merge(midm_df, meta_df, left_on="id", right_on="stimulus_id")
 
         if merged_df.empty:
             raise ValueError("Merging midm and metadata resulted in an empty dataframe. Check 'id' alignment.")
@@ -59,10 +164,9 @@ class NeuralEncoding(Task):
             stimuli_list = []
             eeg_list = []
 
-            #format lists for mTRFpy
             for _, row in group.iterrows():
-                #assumes 'envelope' and 'ic' are present in the MIDM dataset
-                stim = np.column_stack((row['envelope'], row['ic']))
+                #stacking the envelope and whichever MIDM feature was requested
+                stim = np.column_stack((row['envelope'], row[self.midm_column]))
                 eeg = np.array(row['eeg_data'])
                 stimuli_list.append(stim)
                 eeg_list.append(eeg)
@@ -101,13 +205,14 @@ class NeuralEncoding(Task):
 
         metrics_df = pd.DataFrame.from_records(results_records)
 
-        #returning custom object
+        #returning custom data object
         return NeuralEncodingResult(
             correlation_metrics=metrics_df,
             weights_dict=weights_dictionary,
             ch_names=ch_names,
             fs=fs,
-            tmin=self.tmin
+            tmin=self.tmin,
+            mid_feature_name=self.midm_column.upper()
         )
 
 
@@ -122,13 +227,15 @@ class NeuralEncodingResult(Result):
         weights_dict: dict,
         ch_names: list,
         fs: float,
-        tmin: float
+        tmin: float,
+        mid_feature_name: str = "MID"
     ):
         self.correlation_metrics = correlation_metrics
         self.weights_dict = weights_dict
         self.ch_names = list(ch_names)
         self.fs = fs
         self.tmin = tmin
+        self.mid_feature_name = mid_feature_name
 
     def __str__(self) -> str:
         return self.correlation_metrics.to_string(index=False)
@@ -187,7 +294,7 @@ class NeuralEncodingResult(Result):
         group_delta_z = pivot_delta.values
         mean_delta_z = np.mean(group_delta_z, axis=0)
 
-        # 1. Baseline Stats
+        #baseline Stats
         p_values_base = []
         for ch in range(group_z_base.shape[1]):
             try:
@@ -389,9 +496,11 @@ class NeuralEncodingResult(Result):
                 dummy_trf = TRF(direction=1)
                 dummy_trf.weights = self.weights_dict[subject]
                 fig_weights = self.plot_participant_trf_topomaps(
-                    dummy_trf, ch_order, self.fs, self.tmin, subject, 1, "Information Content (IC)", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+                dummy_trf, ch_order, self.fs, self.tmin, subject, 1, 
+                feature_name=self.mid_feature_name,
+                times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
                 )
-                fig_weights.savefig(f"{plots_dir}/topomap_song_{subject}_IC_weights.png", dpi=300)
+                fig_weights.savefig(f"{plots_dir}/topomap_song_{subject}_{self.mid_feature_name}_weights.png", dpi=300)
                 plt.close(fig_weights)
 
         print("  -> Computing Group-Level Statistics for Final Topomap...")
