@@ -188,3 +188,5 @@ The project license has not been decided yet.
 The [LICENSE](LICENSE) file is intentionally empty for now.
 
 Code adapted from third-party projects (including `libfmp`) is acknowledged in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and remains under its original license terms.
+
+Additional licenses apply to precomputed assets, please refer to [https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
