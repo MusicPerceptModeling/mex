@@ -31,7 +31,7 @@ class NeuralEncodingMetaData(MetaData):
 
 
 class SongMetaData(NeuralEncodingMetaData):
-    def __init__(self, mat_dir: str):
+    def __init__(self, mat_dir: str = None, **kwargs):
         super().__init__()
         self.mat_dir = mat_dir
 
@@ -40,10 +40,13 @@ class SongMetaData(NeuralEncodingMetaData):
         return 'song_eeg_metadata'
 
     def _preprocess(self, cache_dir: str = None) -> Dataset:
-        """
-        Reads local SONG .mat files, filters 30 specific scalp channels,
-        and packages them into a HuggingFace Dataset.
-        """
+        raise NotImplementedError(
+            "This dataset is pre-computed. Load the parquet file directly via the HuggingFace Hub or local cache."
+        )
+    """
+    def _preprocess(self, cache_dir: str = None) -> Dataset:
+        #Reads local SONG .mat files, filters 30 specific scalp channels,
+        #and packages them into a HuggingFace Dataset.
         assert self.mat_dir is not None, "mat_dir must be provided for preprocessing SongMetaData"
         
         mat_files = sorted(glob.glob(os.path.join(self.mat_dir, "pre_dataSub*.mat")))
@@ -108,3 +111,4 @@ class SongMetaData(NeuralEncodingMetaData):
 
         # Build and return the HuggingFace Dataset
         return Dataset.from_list(records, features=self._metadata_scheme())
+        """

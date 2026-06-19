@@ -17,10 +17,11 @@ import matplotlib.pyplot as plt
 import mne
 
 from mtrf.model import TRF
+from ..metadata.neural import NeuralEncodingMetaData
 
 # from eeg_utils.utils.utils_statistics import jackknife_ttest
 
-class NeuralEncoding(Task):
+class NeuralEncodingTask(Task):
     def __init__(
         self,
         tmin: float = -0.1,
