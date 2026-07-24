@@ -1,36 +1,89 @@
+import os
+import glob
+import numpy as np
+import pandas as pd
+from datasets import Dataset, Features, Sequence, Value
 from pathlib import Path
-import datasets
-from datasets.features import Value, Sequence, Features
 
-# 1. Define the dataset name and load it from your local cache
-ds_name = 'song_audioic_entropy_mc32' 
-ds = datasets.load_from_disk(f'cache/metrics/{ds_name}')
-print("Original dataset schema:", ds)
+def build_direct_dataset():
+    print("Starting direct dataset construction from raw files...")
 
-# 2. Resolve the ID issue: Convert integer IDs to strings
-# This ensures it matches the 'stimulus_id' (e.g., "trial_01") in the EEG metadata
-if ds.features['id'].dtype != 'string':
-    print("Converting 'id' column to string...")
-    # Add prefix if needed, e.g., 'trial_' + str(x['id']) depending on your EEG mat files
-    ds = ds.map(lambda x: {'id': f"trial_{int(x['id']):02d}"}) 
+    env_dir = Path("../Giorgia_data/features/64Hz/eel_envelope").resolve()
+    ic_dir = Path("/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0").resolve()
 
-#Define the schema required by the Neural Encoding Task
-#Ensure these keys exactly match the column names in your loaded `ds`
-features = Features({
-    'id': Value('string'),
-    'envelope': Sequence(Value('float32')),
-    'entropy': Sequence(Value('float32')), # 'ic' if the column of interest in the dataset to convert is named 'ic'
-})
+    env_dt = 0.015625
+    ic_dt = 0.0928798
 
-# 4. Select only the necessary columns and cast to float32 to save space
-casted = ds.select_columns(list(features.keys())).cast(features)
-print("\nCasted dataset ready for export:", casted)
+    # Alphabetical sort to match the EEG arrays perfectly
+    ic_files = sorted(
+        glob.glob(str(ic_dir / "ic_*_song.csv")) +
+        glob.glob(str(ic_dir / "*_song.npy"))
+    )
 
-# 5. Save to the MEX huggingface folder structure as a Parquet file
-new_folder = Path('hf_datasets_mex', ds_name)
-new_folder.mkdir(parents=True, exist_ok=True)
-out = new_folder / 'train.parquet'
-casted.to_parquet(out)
+    if not ic_files:
+        print(f"Error: No IC files found in {ic_dir}")
+        return
 
-print(f"\nSuccessfully saved optimized MIDM dataset to {out}")
-print(f"Don't forget to update hf_datasets_mex/README.md to expose {ds_name}!")
+    data_dict = {
+        "id": [],
+        "envelope": [],
+        "ic_noise_0_0": [],  
+        "ic_time": []        
+    }
+
+    print(f"Found {len(ic_files)} IC files. Processing...")
+
+    for trial_idx, ic_path in enumerate(ic_files):
+        filename = os.path.basename(ic_path)
+
+        base_name = filename.replace('ic_', '').rsplit('.', 1)[0]
+        env_filename = base_name + '.npy'
+        env_path = env_dir / env_filename
+
+        if not env_path.exists():
+            print(f"  [Skipping] {filename}: Matching envelope {env_filename} not found.")
+            continue
+
+        env_data = np.squeeze(np.load(env_path)).astype(np.float64)
+
+        if filename.endswith('.npy'):
+            ic_data = np.squeeze(np.load(ic_path)).astype(np.float64)
+            ic_time = np.arange(len(ic_data)) * ic_dt
+        else:
+            ic_df = pd.read_csv(ic_path)
+            ic_data = ic_df.iloc[:, 1].fillna(0.0).values.astype(np.float64)
+            if 'time' in ic_df.columns:
+                ic_time = ic_df['time'].values.astype(np.float64)
+            else:
+                ic_time = np.arange(len(ic_data)) * ic_dt
+
+        # Use the raw integer index to pass PyArrow's int64 requirement
+        data_dict["id"].append(trial_idx)
+        data_dict["envelope"].append(env_data)
+        data_dict["ic_noise_0_0"].append(ic_data)
+        data_dict["ic_time"].append(ic_time)
+
+    # Use int64 for the ID schema
+    features = Features({
+        'id': Value('int64'),
+        'envelope': Sequence(Value('float64')),
+        'ic_noise_0_0': Sequence(Value('float64')),
+        'ic_time': Sequence(Value('float64'))
+    })
+
+    ds = Dataset.from_dict(data_dict, features=features)
+
+    try:
+        root_dir = Path(__file__).resolve().parent.parent.parent
+    except NameError:
+        root_dir = Path.cwd()
+
+    out_dir = root_dir / "hf_datasets_mex" / "song_midm_final"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Saving pristine dataset to: {out_dir}")
+    ds.save_to_disk(str(out_dir))
+    print("\nDataset successfully built!")
+
+if __name__ == "__main__":
+    build_direct_dataset()

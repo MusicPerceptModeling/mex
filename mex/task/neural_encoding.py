@@ -5,7 +5,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 import scipy.stats
-from scipy.stats import t, ttest_1samp, wilcoxon, shapiro
+from scipy.stats import t, ttest_1samp, wilcoxon, shapiro, zscore
 from datasets import Dataset, concatenate_datasets
 
 from ..benchmark import Task, Result
@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 import mne
 
 from mtrf.model import TRF
+from mtrf.stats import nested_crossval, crossval
 from ..metadata.neural import NeuralEncodingMetaData
 
-# from eeg_utils.utils.utils_statistics import jackknife_ttest
 
 class NeuralEncodingTask(Task):
     def __init__(
@@ -28,14 +28,24 @@ class NeuralEncodingTask(Task):
         tmax: float = 0.7,
         use_banded: bool = False,
         n_perms: int = None,
-        midm_column: str = "ic" #default is 'ic', but allows 'entropy', 'typicality', etc.
+        midm_column: str = "ic",
+        env_dt: float = 0.015625,  # 64Hz envelope
+        ic_dt: float = 0.0928798   # Song model hop-size
     ):
         super().__init__(NeuralEncodingMetaData)
         self.tmin = tmin
         self.tmax = tmax
         self.use_banded = use_banded
         self.n_perms = n_perms
-        self.midm_column = midm_column #storing the feature name
+        self.midm_column = midm_column
+        self.env_dt = env_dt
+        self.ic_dt = ic_dt
+
+    @staticmethod
+    def fisher_z_transform(r: np.ndarray) -> np.ndarray:
+        """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
+        r_clipped = np.clip(r, -0.999, 0.999)
+        return np.arctanh(r_clipped)
 
     @staticmethod
     def compare_direct_models(stimuli_list, eeg_list, fs, use_banded=False):
@@ -59,7 +69,7 @@ class NeuralEncodingTask(Task):
         )
         if r_base.ndim == 2:
             r_base = np.mean(r_base, axis=0)
-        z_base = fisher_z_transform(r_base)
+        z_base = NeuralEncodingTask.fisher_z_transform(r_base)
         print(f'Best energy-only lambda: {opt_lambda_env}')
 
         # --- Full model (Energy + IC) ---
@@ -69,9 +79,7 @@ class NeuralEncodingTask(Task):
             opt_lambda_full = [1.0, 1.0]
             n_epochs = len(stimuli_list)
 
-            #reg_env = np.logspace(0, 4, 5)
             reg_env = np.logspace(-1, 3, 10)
-            #reg_ic = np.logspace(-1, 3, 5)
             reg_ic = np.logspace(-1, 3, 10)
 
             for l_env in reg_env:
@@ -101,7 +109,6 @@ class NeuralEncodingTask(Task):
 
             print(f'Best banded lambdas [Env, IC]: {opt_lambda_full}')
 
-            # Final LOO CV with the optimal lambdas
             final_rs = []
             for i in range(n_epochs):
                 val_stim = stimuli_list[i]
@@ -121,7 +128,6 @@ class NeuralEncodingTask(Task):
             r_full = np.mean(final_rs, axis=0)
 
         else:
-            # Standard Ridge Fallback
             r_full, best_lambdas_full = nested_crossval(
                 trf, stimuli_list, eeg_list, fs, tmin, tmax, regularization,
                 k=k_folds, average=True, verbose=False
@@ -134,53 +140,86 @@ class NeuralEncodingTask(Task):
             if r_full.ndim == 2:
                 r_full = np.mean(r_full, axis=0)
 
-        z_full = fisher_z_transform(r_full)
+        z_full = NeuralEncodingTask.fisher_z_transform(r_full)
         delta_z = z_full - z_base
 
         return z_full, z_base, delta_z, opt_lambda_full
 
     def _run_task(self, midm: Dataset, metadata: Dataset, **kwargs) -> 'NeuralEncodingResult':
-        """
-        midm: Contains 'id', 'envelope', 'ic' (the model outputs)
-        metadata: Contains 'id', 'subject', 'eeg_data', 'ch_names', 'fs'
-        """
-        #merge the model outputs with the EEG metadata based on unique 'id'
         midm_df = midm.to_pandas()
         meta_df = metadata.to_pandas()
         
-        # Merge using 'id' from midm (e.g. "trial_01") and 'stimulus_id' from meta (e.g. "trial_01")
-        merged_df = pd.merge(midm_df, meta_df, left_on="id", right_on="stimulus_id")
+        # Clean IDs to simple integers for a perfect 1:1 merge
+        midm_df["id"] = midm_df["id"].astype(int)
+        meta_df["stimulus_id"] = meta_df["stimulus_id"].str.replace("trial_", "").astype(int)
 
+        merged_df = pd.merge(midm_df, meta_df, left_on="id", right_on="stimulus_id")
+        
         if merged_df.empty:
             raise ValueError("Merging midm and metadata resulted in an empty dataframe. Check 'id' alignment.")
 
         results_records = []
         weights_dictionary = {}
-
-        fs = merged_df.iloc[0]['fs']
         ch_names = merged_df.iloc[0]['ch_names']
 
-        #iterate over subjects to fit TRFs
         for subject, group in merged_df.groupby('subject'):
             stimuli_list = []
             eeg_list = []
+            
+            # Use a default fallback, but overwrite it dynamically per row
+            fs = 64.0 
 
             for _, row in group.iterrows():
-                #stacking the envelope and whichever MIDM feature was requested
-                stim = np.column_stack((row['envelope'], row[self.midm_column]))
-                eeg = np.array(row['eeg_data'])
-                stimuli_list.append(stim)
-                eeg_list.append(eeg)
+                # CRITICAL: Dynamically read the true sampling rate to prevent time-warping
+                fs = float(row['fs'])
+                
+                env = np.array(list(row['envelope']), dtype=float)
+                feat = np.array(list(row[self.midm_column]), dtype=float)
 
-            #fit cross-validated models 
-            z_full, z_base, delta_z, opt_lambda = compare_direct_models(
+                eeg = np.vstack(row['eeg_data']).astype(float)
+                if eeg.ndim == 2 and eeg.shape[0] < eeg.shape[1]:
+                    eeg = eeg.T
+                elif eeg.ndim == 1:
+                    eeg = eeg[:, np.newaxis]
+
+                eeg_length = eeg.shape[0]
+                eeg_time = np.arange(eeg_length) / fs
+                env_time = np.arange(len(env)) * self.env_dt
+
+                if 'time' in row and row['time'] is not None:
+                    ic_time = np.array(list(row['time']), dtype=float)
+                elif 'ic_time' in row and row['ic_time'] is not None:
+                    ic_time = np.array(list(row['ic_time']), dtype=float)
+                else:
+                    ic_time = np.arange(len(feat)) * self.ic_dt
+
+                from scipy.interpolate import interp1d
+                ic_interpolator = interp1d(ic_time, feat, kind='linear', bounds_error=False, fill_value=0.0)
+                ic_aligned = ic_interpolator(eeg_time)
+
+                env_interpolator = interp1d(env_time, env, kind='linear', bounds_error=False, fill_value=0.0)
+                env_aligned = env_interpolator(eeg_time)
+
+                stim = np.column_stack((env_aligned, ic_aligned))
+                clean_stim = np.nan_to_num(zscore(stim, axis=0))
+                clean_eeg = np.nan_to_num(zscore(eeg, axis=0))
+
+                stimuli_list.append(clean_stim)
+                eeg_list.append(clean_eeg)
+
+            if not stimuli_list:
+                continue
+            
+            # Diagnostic print to confirm data integrity 
+            print(f"[{subject}] Merged {len(stimuli_list)} valid epochs at {fs} Hz.")
+
+            z_full, z_base, delta_z, opt_lambda = self.compare_direct_models(
                 stimuli_list, eeg_list, fs, use_banded=self.use_banded
             )
 
             delta_z = np.nan_to_num(delta_z, nan=0.0)
             z_base = np.nan_to_num(z_base, nan=0.0)
 
-            #store channel-level correlation metrics
             for ch_idx, ch_name in enumerate(ch_names):
                 results_records.append({
                     "subject": subject,
@@ -189,7 +228,6 @@ class NeuralEncodingTask(Task):
                     "delta_z": delta_z[ch_idx]
                 })
 
-            #Fit final model to extract weights
             final_trf = TRF(direction=1)
             if isinstance(opt_lambda, list):
                 final_trf.train(
@@ -206,7 +244,6 @@ class NeuralEncodingTask(Task):
 
         metrics_df = pd.DataFrame.from_records(results_records)
 
-        #returning custom data object
         return NeuralEncodingResult(
             correlation_metrics=metrics_df,
             weights_dict=weights_dictionary,
@@ -218,10 +255,6 @@ class NeuralEncodingTask(Task):
 
 
 class NeuralEncodingResult(Result):
-    """
-    Holds exactly the mathematical artifacts needed: correlation matrices and TRF weights.
-    Handles optional plotting and terminal summaries on save.
-    """
     def __init__(
         self,
         correlation_metrics: pd.DataFrame,
@@ -241,61 +274,52 @@ class NeuralEncodingResult(Result):
     def __str__(self) -> str:
         return self.correlation_metrics.to_string(index=False)
 
-    def save(self, path: str, plot_graphs: bool = False, print_summary: bool = True):
-        """
-        Persists the matrices to disk. Triggers plotting and terminal logging if requested.
-        """
+    def save(self, path: str, plot_graphs: bool = True, print_summary: bool = True):
         os.makedirs(path, exist_ok=True)
-
-        # saving correlation matrices (dataframe to parquet)
         metrics_path = os.path.join(path, "trf_correlation_metrics.parquet")
         self.correlation_metrics.to_parquet(metrics_path)
-
-        # saving TRF weights (dictionary to npz)
         weights_path = os.path.join(path, "trf_weights.npz")
         np.savez(weights_path, **self.weights_dict)
-
         print(f"Artifacts saved to {path}")
 
-        # Terminal statistical summary
         if print_summary:
             self.print_summary()
-
-        # Optional topomaps and time delay weight graphs
         if plot_graphs:
             print("Plotting graphs as requested...")
             self._generate_plots(path)
 
     @classmethod
     def load(cls, path: str) -> 'NeuralEncodingResult':
-        """Reconstructs the Result object from a saved directory."""
         metrics_df = pd.read_parquet(os.path.join(path, "trf_correlation_metrics.parquet"))
         weights_npz = np.load(os.path.join(path, "trf_weights.npz"))
         weights_dict = {key: weights_npz[key] for key in weights_npz.files}
-
         ch_names = metrics_df['channel'].unique().tolist()
         return cls(metrics_df, weights_dict, ch_names=ch_names, fs=64.0, tmin=-0.1)
-
-    # #######################################################
-    #                    STATISTICAL SUMMARY
-    # #######################################################
     
     def print_summary(self):
-        """Reconstructs the detailed terminal printout from the benchmark data."""
         print("\n==========================================")
         print(" Computing Group-Level Statistics...")
         print("==========================================")
 
-        # Pivot to get matrices of shape (n_subjects, n_channels) aligned to self.ch_names
-        pivot_base = self.correlation_metrics.pivot(index='subject', columns='channel', values='z_base')[self.ch_names]
+        # Standard 10-05 scalp electrodes 
+        eeg_only_names = [
+            'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
+            'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz',
+            'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
+        ]
+        
+        # Keep only the valid EEG names that actually exist in the dataset
+        valid_eeg_names = [ch for ch in eeg_only_names if ch in self.ch_names]
+
+        # Pivot matrices strictly aligned to the 30 EEG channels BEFORE stats
+        pivot_base = self.correlation_metrics.pivot(index='subject', columns='channel', values='z_base')[valid_eeg_names]
         group_z_base = pivot_base.values
         mean_z_base = np.mean(group_z_base, axis=0)
 
-        pivot_delta = self.correlation_metrics.pivot(index='subject', columns='channel', values='delta_z')[self.ch_names]
+        pivot_delta = self.correlation_metrics.pivot(index='subject', columns='channel', values='delta_z')[valid_eeg_names]
         group_delta_z = pivot_delta.values
         mean_delta_z = np.mean(group_delta_z, axis=0)
 
-        #baseline Stats
         p_values_base = []
         for ch in range(group_z_base.shape[1]):
             try:
@@ -305,17 +329,16 @@ class NeuralEncodingResult(Result):
                 p = res.pvalue
             p_values_base.append(p)
 
+        p_values_base = np.array(p_values_base)
         reject_null_base, p_values_fdr_base = mne.stats.fdr_correction(p_values_base, alpha=0.05, method='indep')
         sig_ch_base = np.where(reject_null_base)[0]
 
         print(f"Overall Mean Scalp Envelope Prediction (z_base): {np.mean(mean_z_base):.4f}")
-        print(f"Number of channels with significant envelope prediction: {len(sig_ch_base)} / {len(self.ch_names)}")
         if len(sig_ch_base) > 0:
             print("\nSignificant Envelope Channels (FDR Corrected):")
             for ch_idx in sig_ch_base:
-                print(f" - {self.ch_names[ch_idx]}: z_base = {mean_z_base[ch_idx]:.4f} (p = {p_values_fdr_base[ch_idx]:.4f})")
+                print(f" - {valid_eeg_names[ch_idx]}: z_base = {mean_z_base[ch_idx]:.4f} (p = {p_values_fdr_base[ch_idx]:.4f})")
 
-        #IC enhancement stats
         p_values_delta = []
         for ch in range(group_delta_z.shape[1]):
             try:
@@ -325,83 +348,71 @@ class NeuralEncodingResult(Result):
                 p = res.pvalue
             p_values_delta.append(p)
 
+        # FDR Correction STRICTLY on the 30 EEG channels
         reject_null_delta, p_values_fdr_delta = mne.stats.fdr_correction(p_values_delta, alpha=0.05, method='indep')
         sig_ch_delta = np.where(reject_null_delta)[0]
 
         print(f"\nTotal Subjects Processed: {group_delta_z.shape[0]}")
         print(f"Overall Mean Scalp Enhancement: {np.mean(mean_delta_z):.4f}")
-        print(f"Number of EEG channels with significant IC enhancement: {len(sig_ch_delta)} / {len(self.ch_names)}")
+        print(f"Number of EEG channels with significant IC enhancement: {len(sig_ch_delta)} / {len(valid_eeg_names)}")
 
         if len(sig_ch_delta) > 0:
             print("\nSignificant Channels (FDR Corrected):")
             for ch_idx in sig_ch_delta:
-                print(f" - {self.ch_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr_delta[ch_idx]:.4f})")
+                print(f" - {valid_eeg_names[ch_idx]}: Δz = {mean_delta_z[ch_idx]:.4f} (p = {p_values_fdr_delta[ch_idx]:.4f})")
 
-        #ROI stats
         print("\n==========================================")
         print(" Computing ROI-Averaged Statistics...")
         print("==========================================")
         roi_names = ['Fz', 'Cz', 'FC1', 'FC2', 'C3', 'C4', 'FC5', 'FC6', 'T7', 'T8', 'CP5', 'CP6']
-        roi_indices = [self.ch_names.index(ch) for ch in roi_names if ch in self.ch_names]
+        roi_indices = [valid_eeg_names.index(ch) for ch in roi_names if ch in valid_eeg_names]
 
         if roi_indices:
             roi_delta_z = group_delta_z[:, roi_indices]
             subj_roi_averages = np.mean(roi_delta_z, axis=1)
             mean_roi_enhancement = np.mean(subj_roi_averages)
 
-            print(f"ROI Channels Used: {[self.ch_names[i] for i in roi_indices]}")
+            print(f"ROI Channels Used: {[valid_eeg_names[i] for i in roi_indices]}")
             print(f"Raw Mean ROI Enhancement: {mean_roi_enhancement:.4f}")
 
             p_val_roi, test_name_roi = self.test_roi_significance(subj_roi_averages)
             sig_str = "*** SIGNIFICANT ***" if p_val_roi < 0.05 else "(Not Significant)"
             print(f"ROI {test_name_roi}: p = {p_val_roi:.4f} {sig_str}")
 
-        #global stats
         print("\n==========================================")
         print(" Computing Global-Averaged Statistics...")
         print("==========================================")
         subj_global_averages = np.mean(group_delta_z, axis=1)
         mean_global_enhancement = np.mean(subj_global_averages)
-        print(f"Global Channels Used: All {len(self.ch_names)} electrodes")
+        print(f"Global Channels Used: All {len(valid_eeg_names)} electrodes")
         print(f"Raw Mean Global Enhancement: {mean_global_enhancement:.4f}")
         
         p_val_glob, test_name_glob = self.test_roi_significance(subj_global_averages)
         sig_str_glob = "*** SIGNIFICANT ***" if p_val_glob < 0.05 else "(Not Significant)"
         print(f"Global {test_name_glob}: p = {p_val_glob:.4f} {sig_str_glob}\n")
 
-
-    # #######################################################
-    #                STATISTICAL UTILS (STATIC)
-    # #######################################################
-
     @staticmethod
     def jackknife_ttest(data, alternative='greater'):
         n = len(data)
         if n <= 1:
             raise ValueError("Data must contain more than one sample for jackknife.")
-            
         mean_obs = np.mean(data)
         jack_means = np.zeros(n)
         for i in range(n):
             jack_sample = np.delete(data, i)
             jack_means[i] = np.mean(jack_sample)
-            
         mean_jack = np.mean(jack_means)
         se_jack = np.sqrt(((n - 1) / n) * np.sum((jack_means - mean_jack)**2))
-        
         if se_jack == 0:
             se_jack = 1e-10
-            
         t_stat = mean_obs / se_jack
         df = n - 1
-        
         if alternative == 'greater':
             p_val = t.sf(t_stat, df)
         elif alternative == 'less':
             p_val = t.cdf(t_stat, df)
         else:
             p_val = 2 * t.sf(np.abs(t_stat), df)
-            
         return t_stat, p_val
 
     @staticmethod
@@ -414,10 +425,6 @@ class NeuralEncodingResult(Result):
             res = ttest_1samp(roi_averages, popmean=0.0, alternative='greater')
             return res.pvalue, "1-Sample T-Test"
 
-    # #######################################################
-    #                PLOTTING UTILS (STATIC)
-    # #######################################################
-    
     @staticmethod
     def plot_static_score_topomap(scores, ch_names, subj_id, score_type="Δz (Predictive Enhancement)", cmap="Reds", vmin=None, vmax=None):
         scores = np.asarray(scores).flatten()
@@ -448,7 +455,6 @@ class NeuralEncodingResult(Result):
 
         evoked = mne.EvokedArray(weights_mne, info, tmin=tmin)
         robust_vmax = np.percentile(np.abs(weights_mne), 95)
-        
         fig = evoked.plot_topomap(
             times=times_to_plot, ch_type='eeg', time_unit='s', colorbar=True, show=False,
             scalings=dict(eeg=1), units=dict(eeg='TRF Weight'), vlim=(-robust_vmax, robust_vmax)
@@ -483,21 +489,32 @@ class NeuralEncodingResult(Result):
         os.makedirs(plots_dir, exist_ok=True)
         print("  -> Generating Subject-Level Topomaps...")
         
-        ch_order = self.ch_names
+        eeg_only_names = [
+            'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
+            'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz',
+            'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6', 'TP9', 'TP10'
+        ]
+        valid_eeg_names = [ch for ch in eeg_only_names if ch in self.ch_names]
         
         for subject, group in self.correlation_metrics.groupby("subject"):
-            group = group.set_index('channel').reindex(ch_order)
+            group = group.set_index('channel').reindex(valid_eeg_names)
             scalp_scores = group['delta_z'].fillna(0.0).values
             
-            fig_dz = self.plot_static_score_topomap(scalp_scores, ch_order, subject, "Δz (Full - Baseline)")
+            fig_dz = self.plot_static_score_topomap(scalp_scores, valid_eeg_names, subject, "Δz (Full - Baseline)")
             fig_dz.savefig(f"{plots_dir}/topomap_{subject}_delta_z.png", dpi=300)
             plt.close(fig_dz)
 
             if subject in self.weights_dict:
                 dummy_trf = TRF(direction=1)
                 dummy_trf.weights = self.weights_dict[subject]
+                
+                # Slice weights down to valid EEG channels for plotting
+                eeg_indices = [self.ch_names.index(ch) for ch in valid_eeg_names]
+                sliced_weights = dummy_trf.weights[:, :, eeg_indices]
+                dummy_trf.weights = sliced_weights
+                
                 fig_weights = self.plot_participant_trf_topomaps(
-                dummy_trf, ch_order, self.fs, self.tmin, subject, 1, 
+                dummy_trf, valid_eeg_names, self.fs, self.tmin, subject, 1, 
                 feature_name=self.mid_feature_name,
                 times_to_plot=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
                 )
@@ -505,7 +522,7 @@ class NeuralEncodingResult(Result):
                 plt.close(fig_weights)
 
         print("  -> Computing Group-Level Statistics for Final Topomap...")
-        pivot_df = self.correlation_metrics.pivot(index='subject', columns='channel', values='delta_z')[ch_order]
+        pivot_df = self.correlation_metrics.pivot(index='subject', columns='channel', values='delta_z')[valid_eeg_names]
         group_delta_z = pivot_df.values
         mean_delta_z = np.mean(group_delta_z, axis=0)
 
@@ -521,7 +538,7 @@ class NeuralEncodingResult(Result):
         p_values = np.array(p_values)
         reject_null, _ = mne.stats.fdr_correction(p_values, alpha=0.05, method='indep')
 
-        fig_group = self.plot_group_level_topomap(mean_delta_z, ch_order, reject_null, "Mean Δz", "Reds", 0.0)
+        fig_group = self.plot_group_level_topomap(mean_delta_z, valid_eeg_names, reject_null, "Mean Δz", "Reds", 0.0)
         fig_group.savefig(f"{plots_dir}/group_level_enhancement_song.png", dpi=300)
         plt.close(fig_group)
         print(f"All plots successfully saved to {plots_dir}/")

@@ -10,7 +10,8 @@ from mex.util.hf import update_readme_config_entry
 @dataclass
 class DatasetProvider:
     cache_dir : str =  None
-    hf_root: str = 'muthissar/music_surprisal_benchmarks'
+    #hf_root: str = 'muthissar/music_surprisal_benchmarks'
+    hf_root: str = "MusicPerceptModeling/mex"
     hf_token : str = None
     hf_revision: str = None
     hf_upload: bool = False

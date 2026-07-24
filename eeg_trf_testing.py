@@ -1996,7 +1996,8 @@ if __name__ == "__main__":
     # SONG dataset paths
     parser.add_argument('--mat_dir', type=str, default="../Giorgia_data/song/1-8Hz/Mastoids", help="Path to SONG .mat files")
     parser.add_argument('--npy_dir', type=str, default="../Giorgia_data/features/64Hz/eel_envelope", help="Path to SONG .npy envelope files")
-    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5/noise_0.5", help="Path to SONG ic files")
+    #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5/noise_0.5", help="Path to SONG ic files")
+    parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5/noise_0", help="Path to SONG ic files")
     #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/song_audioic_ic", help="Path to SONG ic files")
     #parser.add_argument('--csv_dir', type=str, default="/Users/augustin.bouquillard/Downloads/audioic/song_audioic_entropy_mc32", help="Path to SONG ic files")
 
