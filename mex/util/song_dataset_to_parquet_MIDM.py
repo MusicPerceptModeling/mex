@@ -14,7 +14,8 @@ def build_direct_dataset():
     env_dir = Path("../Giorgia_data/features/64Hz/eel_envelope").resolve()
     
     # Base directory containing the three noise level subfolders
-    base_ic_dir = Path("/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5").resolve()
+    #base_ic_dir = Path("/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_ic_0.0-0.3-0.5").resolve()
+    base_ic_dir = Path("/Users/augustin.bouquillard/Downloads/pa_audioic/song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5").resolve()
     
     # Define paths for all three noise levels
     ic_dir_0 = base_ic_dir / "noise_0"
@@ -113,8 +114,8 @@ def build_direct_dataset():
     except NameError:
         root_dir = Path.cwd()
 
-    # Save as a single parquet file mimicking the others
-    out_file = root_dir / "hf_datasets_mex" / "song_pa-audioic_ic-0.0-0.3-0.5.parquet"
+    #out_file = root_dir / "hf_datasets_mex" / "song_pa-audioic_ic-0.0-0.3-0.5" / "train.parquet"
+    out_file = root_dir / "hf_datasets_mex" / "song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5" / "train.parquet"
     print(f"Saving multi-noise dataset to: {out_file}")
     
     ds.to_parquet(str(out_file))

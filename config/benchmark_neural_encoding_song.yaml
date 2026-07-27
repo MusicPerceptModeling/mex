@@ -6,12 +6,12 @@ benchmark:
       tmax: 0.7
       use_banded: false
       n_perms: 100               
-      midm_column: "ic_noise_0_0" #0_3 and 0_5 also available
+      midm_column: "ic_noise_0_5" #0_3 and 0_5 also available
       
   metadata:
     class_path: mex.metadata.neural.SongMetaData 
     init_args: {} 
 
-  #midm: hf_datasets_mex/song_pa-audioic_ic-0.0
+  #midm: song_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5
   midm: song_pa-audioic_ic-0.0-0.3-0.5
   out_path: "results_song"
