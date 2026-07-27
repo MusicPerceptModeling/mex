@@ -1,16 +1,16 @@
-task:
-  class_path: mex.task.neural_encoding.NeuralEncodingTask
-  init_args:
-    tmin: -0.1
-    tmax: 0.7
-    use_banded: false #true
-    n_perms: 100               
-    midm_column: "ic_noise_0_0" 
-    
-metadata:
-  class_path: mex.metadata.neural.SongMetaData 
-  init_args: {} 
+benchmark:
+  task:
+    class_path: mex.task.neural_encoding.NeuralEncodingTask
+    init_args:
+      tmin: -0.1
+      tmax: 0.7
+      use_banded: false
+      n_perms: 100               
+      midm_column: "ic_noise_0_0" #0_3 and 0_5 also available
+      
+  metadata:
+    class_path: mex.metadata.neural.SongMetaData 
+    init_args: {} 
 
-midm: hf_datasets_mex/song_pa-audioic_ic-0.0-0.3-0.5
-#midm: hf_datasets_mex/song_midm_final
-out_path: "results_song"
+  midm: hf_datasets_mex/song_pa-audioic_ic-0.0-0.3-0.5
+  out_path: "results_song"

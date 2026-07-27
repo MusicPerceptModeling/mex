@@ -78,12 +78,17 @@ def build_direct_dataset():
     except NameError:
         root_dir = Path.cwd()
 
-    out_dir = root_dir / "hf_datasets_mex" / "song_midm_final"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    #out_dir = root_dir / "hf_datasets_mex" / "song_midm_final"
+    #out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Saving pristine dataset to: {out_dir}")
-    ds.save_to_disk(str(out_dir))
-    print("\nDataset successfully built!")
+    #print(f"Saving dataset to: {out_dir}")
+    #ds.save_to_disk(str(out_dir))
+    #print("\nDataset successfully built!")
+
+    #saving a single parquet file instead of an arrow directory:
+    out_file = root_dir / "hf_datasets_mex" / "song_midm_final.parquet"
+    print(f"Saving dataset to: {out_file}")
+    ds.to_parquet(str(out_file))
 
 if __name__ == "__main__":
     build_direct_dataset()
