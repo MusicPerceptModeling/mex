@@ -12,5 +12,6 @@ benchmark:
     class_path: mex.metadata.neural.SongMetaData 
     init_args: {} 
 
-  midm: hf_datasets_mex/song_pa-audioic_ic-0.0-0.3-0.5
+  #midm: hf_datasets_mex/song_pa-audioic_ic-0.0
+  midm: song_pa-audioic_ic-0.0-0.3-0.5
   out_path: "results_song"
