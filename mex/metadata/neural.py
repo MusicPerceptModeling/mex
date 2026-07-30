@@ -14,15 +14,14 @@ class NeuralEncodingMetaData(MetaData):
         missing = set(scheme.keys()) - set(dataset.column_names)
         if missing:
             raise ValueError(f"Dataset is missing required columns for Neural Encoding: {missing}")
-        
-        # Optionally, cast the dataset to strictly ensure typing
+        #optional casting
         # dataset = dataset.cast(scheme)
 
     @classmethod
     def _metadata_scheme(cls) -> Features:
         return Features({
             "id": Value("string"),           # Unique row ID: e.g., "sub-01_song-05"
-            "stimulus_id": Value("string"),  # ID of the music track: e.g., "song-05" (Matches midm 'id')
+            "stimulus_id": Value("string"),  # ID of the music track: e.g., "song-05" (matches midm 'id')
             "subject": Value("string"),      # Subject identifier: e.g., "sub-01"
             "eeg_data": Sequence(Sequence(Value("float32"))), # 2D Array: (time, channels)
             "ch_names": Sequence(Value("string")),            # Standardized channel names

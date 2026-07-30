@@ -30,7 +30,7 @@ class NeuralEncodingTask(Task):
         n_perms: int = None,
         midm_column: str = "ic",
         env_dt: float = 0.015625,  # 64Hz envelope
-        ic_dt: float = 0.0928798   # Song model hop-size
+        ic_dt: float = 0.0928798   # pa ARDM framerate
     ):
         super().__init__(NeuralEncodingMetaData)
         self.tmin = tmin
@@ -43,7 +43,7 @@ class NeuralEncodingTask(Task):
 
     @staticmethod
     def fisher_z_transform(r: np.ndarray) -> np.ndarray:
-        """Applies Fisher z-transformation to Pearson's r values to normalize variance."""
+        """applies Fisher z-transformation to Pearson's r values"""
         r_clipped = np.clip(r, -0.999, 0.999)
         return np.arctanh(r_clipped)
 
@@ -74,7 +74,7 @@ class NeuralEncodingTask(Task):
 
         # --- Full model (Energy + IC) ---
         if use_banded:
-            print("Fitting Full Model with BANDED Regularization (Manual List Grid Search)...")
+            print("Fitting Full Model with banded Regularization (manual list grid search)...")
             best_r = -np.inf
             opt_lambda_full = [1.0, 1.0]
             n_epochs = len(stimuli_list)
@@ -149,7 +149,7 @@ class NeuralEncodingTask(Task):
         midm_df = midm.to_pandas()
         meta_df = metadata.to_pandas()
         
-        # Clean IDs to simple integers for a perfect 1:1 merge
+        #cleaning IDs to simple integers 
         midm_df["id"] = midm_df["id"].astype(int)
         meta_df["stimulus_id"] = meta_df["stimulus_id"].str.replace("trial_", "").astype(int)
 
@@ -166,11 +166,11 @@ class NeuralEncodingTask(Task):
             stimuli_list = []
             eeg_list = []
             
-            # Use a default fallback, but overwrite it dynamically per row
+            #default fallback, but to be dynamically overwritten per row
             fs = 64.0 
 
             for _, row in group.iterrows():
-                # CRITICAL: Dynamically read the true sampling rate to prevent time-warping
+                #reading the true sampling rate to prevent time-warping
                 fs = float(row['fs'])
                 
                 env = np.array(list(row['envelope']), dtype=float)
@@ -210,7 +210,7 @@ class NeuralEncodingTask(Task):
             if not stimuli_list:
                 continue
             
-            # Diagnostic print to confirm data integrity 
+            #diagnostic print to confirm data integrity 
             print(f"[{subject}] Merged {len(stimuli_list)} valid epochs at {fs} Hz.")
 
             z_full, z_base, delta_z, opt_lambda = self.compare_direct_models(
@@ -311,7 +311,7 @@ class NeuralEncodingResult(Result):
         # Keep only the valid EEG names that actually exist in the dataset
         valid_eeg_names = [ch for ch in eeg_only_names if ch in self.ch_names]
 
-        # Pivot matrices strictly aligned to the 30 EEG channels BEFORE stats
+        # Pivot matrices strictly aligned to the 30 EEG channels before stats
         pivot_base = self.correlation_metrics.pivot(index='subject', columns='channel', values='z_base')[valid_eeg_names]
         group_z_base = pivot_base.values
         mean_z_base = np.mean(group_z_base, axis=0)
@@ -348,7 +348,7 @@ class NeuralEncodingResult(Result):
                 p = res.pvalue
             p_values_delta.append(p)
 
-        # FDR Correction STRICTLY on the 30 EEG channels
+        # FDR correction strictly on the 30 EEG channels
         reject_null_delta, p_values_fdr_delta = mne.stats.fdr_correction(p_values_delta, alpha=0.05, method='indep')
         sig_ch_delta = np.where(reject_null_delta)[0]
 
