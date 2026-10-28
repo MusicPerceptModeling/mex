@@ -10,20 +10,18 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
-  "numpy",
-  "pandas",
-  "scipy",
-  "datasets",
-#  "datasets>=4.8.3",
-  "einops",
-  "jsonargparse",
-#  "jsonargparse>=4.0.0",
-  "mir_eval",
-  "pretty_midi",
-  "scikit-learn",
-  "matplotlib",
-  "mne",
-  "mtrf",
+  "numpy==2.5.4",
+  "pandas==3.1.0",
+  "scipy==1.18.1",
+  "datasets>=4.8.3,<5",
+  "einops==0.8.2",
+  "jsonargparse==4.53.0",
+  "mir_eval==0.8.2",
+  "pretty_midi==0.2.11.post0",
+  "scikit-learn==1.9.1",
+  "matplotlib==3.11.2",
+  "mne==1.13.2",
+  "mtrf==2.1.2",
 ]
 
 [project.optional-dependencies]
@@ -42,19 +40,19 @@ baselines = [
 
 extras = [
   "pyfluidsynth",
-  "pretty-midi",
-  "tqdm",
-  "soundfile",
+  "pretty-midi==0.2.11.post0",
+  "tqdm==4.70.1",
+  "soundfile==0.14.0",
 ]
 
 dev = [
-  "pytest",
-  "pre-commit",
-  "pyyaml",
+  "pytest==9.1.1",
+  "pre-commit==4.7.0",
+  "pyyaml==6.0.3",
 ]
 
 demo = [
-  "ipykernel"
+  "ipykernel==7.4.0"
 ]
 
 [tool.setuptools]

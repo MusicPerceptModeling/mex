@@ -24,10 +24,10 @@ benchmark:
       num_proc: 10
 
   midm: [
-    'cache/metrics/salami_pa-audioic_ic-0.0-0.3-0.5',
-    'cache/metrics/salami_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5',
-    'cache/metrics/salami_audioic_entropy_mc32',
-    'cache/metrics/salami_audioic_ic'
+    'salami_pa-audioic_ic-0.0-0.3-0.5',
+    'salami_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5',
+    'salami_audioic_entropy_mc32',
+    'salami_audioic_ic'
   ]
   metadata: SalamiMetaData
   out_path: "segment_boundary.parquet"

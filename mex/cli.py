@@ -39,7 +39,7 @@ class BenchmarkSuite:
         else:
             midm_ = [self.dataset_provider.get_ds(midm[0],use_cache=False)]
             for cm in midm[1:]:
-                midm_.append(self.dataset_provider.get_ds(cm, use_cache=False).remove_columns(['Time', 'id'])) # TODO: remove time
+                midm_.append(self.dataset_provider.get_ds(cm, use_cache=False).remove_columns(['id'])) # TODO: remove time
             midm = datasets.concatenate_datasets(midm_, axis=1)
         if isinstance(metadata, str):
             metadata = self.dataset_provider.get_ds(metadata)
