@@ -14,7 +14,7 @@ More benchmark tasks will be added later.
 <!-- TODO: update when the repo names changes --->
 ### Getting
 ```
-git clone https://github.com/muthissar/music_surprisal_benchmarks.git
+git clone https://github.com/MusicPerceptModeling/mex.git
 cd music_surprisal_benchmarks
 ```
 ### Installing
@@ -52,10 +52,10 @@ The cli stores default application parameters in [`./config/config.yaml`](./conf
 python -m mex.cli --dataset_provider.cache_dir=./cache --help
 ```
 
-MEX stores Benchmark assets for standard datasets and baselines as [`Dataset`](https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset)s in the huggingface hub repository [https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks](https://huggingface.co/datasets/muthissar/music_surprisal_benchmarks).
+MEX stores Benchmark assets for standard datasets and baselines as [`Dataset`](https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset)s in the huggingface hub repository [https://huggingface.co/datasets/MusicPerceptModeling/mex](https://huggingface.co/datasets/MusicPerceptModeling/mex).
 <!--Scheme parsing of `Dataset`'s [`Features`](https://huggingface.co/docs/datasets/about_dataset_features) are used to ensure that the provided datasets can run the benchmark. This typically involves casting the `Dataset` to predefined `Features` (See, e.g., [`repetition_decrease`](mex/benchmark_repetition_test.py#L349-L361)).
 -->
-With the exception of the [`SessionMetaData`](./mex/metadata/symbolic.py) and [`NHSSMetaData`]() audio files for benchmarks are not provided.
+With the exception of the [`SessionMetaData`](./mex/metadata/symbolic.py) audio files for benchmarks are not provided.
 
 
 ### Preprocess metadata
@@ -95,7 +95,7 @@ from mex.dataset_provider import DatasetProvider
 
 dataset_provider = DatasetProvider(
 	cache_dir="./cache",
-	hf_root="muthissar/music_surprisal_benchmarks",
+	hf_root="MusicPerceptModeling/mex",
 	hf_token=os.environ.get("HF_ACCESS_TOKEN"),
 )
 
@@ -131,7 +131,7 @@ from mex.baseline.pa_audioic import PAAudioIC
 
 dp = DatasetProvider(
 	cache_dir="./cache",
-	hf_root="muthissar/music_surprisal_benchmarks",
+	hf_root="MusicPerceptModeling/mex",
 	hf_token=os.environ.get("HF_ACCESS_TOKEN")
 )
 
@@ -184,7 +184,8 @@ git commit -m "Updated hf_datasets_mex submodule pointer"
 
 ## License
 
-The project license has not been decided yet.
-The [LICENSE](LICENSE) file is intentionally empty for now.
+This project is licensed under the terms of the MIT license.
 
 Code adapted from third-party projects (including `libfmp`) is acknowledged in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and remains under its original license terms.
+
+Additional licenses apply to precomputed assets, please refer to [https://huggingface.co/datasets/MusicPerceptModeling/mex](https://huggingface.co/datasets/MusicPerceptModeling/mex).
