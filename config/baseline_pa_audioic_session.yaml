@@ -6,9 +6,8 @@ baseline:
       monte_carlo_samples: 32
       integration_params:
         n_runs: 1
-  audio_ds: cache/datasets/session_ds_entropy
+  audio_ds: session_ds_entropy
   # val: 'ic'
-  # cache_name: cache/metrics/session_pa-audioic_ic-0.0-0.3-0.5
+  # cache_name: session_pa-audioic_ic-0.0-0.3-0.5
   val: 'entropy'
-  cache_name: 'cache/metrics/session_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5'
-  hub_upload: false
+  cache_name: 'session_pa-audioic_entropy_mc32_nruns1_0.0-0.3-0.5'

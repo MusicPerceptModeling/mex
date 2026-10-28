@@ -14,9 +14,16 @@ dependencies = [
   "pandas",
   "scipy",
   "datasets",
+#  "datasets>=4.8.3",
   "einops",
   "jsonargparse",
+#  "jsonargparse>=4.0.0",
   "mir_eval",
+  "pretty_midi",
+  "scikit-learn",
+  "matplotlib",
+  "mne",
+  "mtrf",
 ]
 
 [project.optional-dependencies]

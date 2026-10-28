@@ -1,8 +1,0 @@
-benchmark_all:
-  metric: 'ic'
-  cache_model_segment : 'cache/metrics/salami_pa-audioic_ic-0.0-0.3-0.5'
-  ds_segment: 'cache/datasets/salami_metadata_ds'
-  cache_model_idyom: 'cache/metrics/session_pa-audioic_ic'
-  ds_idyom: 'cache/datasets/session_ds_entropy'
-  periode_frames: 0.0928798185941
-  time_offset_frame: 1

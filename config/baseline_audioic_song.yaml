@@ -1,0 +1,9 @@
+baseline:
+  model:
+    class_path: mex.baseline.audioic.AudioIC
+    # init_args:
+    #   monte_carlo_samples: 32
+  audio_ds: song_audio
+  cache_name: audioic_entropy_mc32_song
+  # val: 'entropy'
+  val: 'ic'

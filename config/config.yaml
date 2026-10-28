@@ -1,7 +1,5 @@
 dataset_provider:
     cache_dir: null
-    #hf_root: 'muthissar/music_surprisal_benchmarks'
     hf_root: 'MusicPerceptModeling/mex'
-    #hf_revision: '0af6776dc262f9e2f39aed672e15753ceb97a620'
-    hf_revision: 'main'
+    hf_revision: '0c5ad936de71cf7026659b3da6a617fdc1f3c9bc'
     hf_upload: false
